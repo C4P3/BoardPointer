@@ -10,7 +10,8 @@ namespace BoardPointer.Core.Mapping;
 /// <param name="NormalizedRadius">正規化半径。応答曲線の入力そのもの。</param>
 /// <param name="Active">出力すべき状態か。乗っていない / 重心が信用できないときは false。</param>
 /// <param name="InDeadzone">デッドゾーンの内側にいるか。</param>
-/// <param name="PressureRatio">合計荷重が基準（可動域測定時の中央値）の何倍か。</param>
+/// <param name="PressureRatio">平滑化した合計荷重が基準の何倍か。</param>
+/// <param name="SmoothedLoadKg">平滑化した合計荷重 [kg]。荷重の軸だけがこれを使う。</param>
 /// <param name="PressureFactor">踏み込みによる速度の倍率 (0〜1)。踏み込みモードが切なら常に1。</param>
 /// <param name="Engaged">実際にカーソルを動かしている状態か。原点の自動追従はこれが false の間だけ。</param>
 public readonly record struct PointerCommand(
@@ -22,6 +23,7 @@ public readonly record struct PointerCommand(
     bool Active,
     bool InDeadzone,
     double PressureRatio,
+    double SmoothedLoadKg,
     double PressureFactor,
     bool Engaged);
 
@@ -46,6 +48,9 @@ public sealed class PointerMapper
     private int _ratioCount;
 
     private bool _clutchEngaged;
+    private double _smoothedLoadKg;
+    private bool _hasSmoothedLoad;
+    private long _lastTimestampMs = -1;
 
     public ReachCalibration Reach { get; } = new();
     public ResponseCurve Curve { get; } = new();
@@ -90,11 +95,86 @@ public sealed class PointerMapper
     /// <summary>踏み込みモードが実際に機能するか。基準荷重が無ければ比を出せないので false。</summary>
     public bool PressureIsAvailable => ReferenceLoadKg > 0.1;
 
+    /// <summary>
+    /// 荷重の応答曲線の指数。1 で直線。重心側の指数と同じ役割で、作動から全開までの間の配り方を決める。
+    ///
+    /// 1 未満にすると、少し動かしただけで倍率が立ち上がる。実測の記録では、0.5 にすると
+    /// 中間域の分布が `77 6 4 1 1 1 1 1 1 3` から `66 2 7 4 6 2 1 2 3 3` に均された。
+    /// ただし効き幅は限定的で、「倍率 0 に張り付く」問題そのものは閾値の位置で決まる。
+    /// </summary>
+    public double LoadExponent { get; set; } = 1.0;
+
+    /// <summary>
+    /// 作動側 (荷重を動かしていないとき) の速度の倍率。
+    ///
+    /// 振り切り側とこの2つで、荷重が速度に与える範囲を決める。**どちらが大きくてもよい**のが
+    /// 要点で、増える方向にも減る方向にも設定できる:
+    ///
+    ///   作動 0.0 → 振り切り 1.0 … 動かさないと止まる。荷重で「動かし始める」
+    ///   作動 1.0 → 振り切り 0.25 … 普段は通常速度、足を浮かせると 25% に落ちて細かく狙える
+    ///   作動 1.0 → 振り切り 0.0 … 普段は通常速度、浮かせると止まる
+    ///
+    /// 2番目が座位では噛み合う。踏み込みは椅子を押し返す必要があって可動幅が取りにくく、
+    /// 足を浮かせる動作のほうが確実に出せるため、「普段は動く・浮かせたら精密」が自然になる。
+    /// </summary>
+    public double LoadFactorAtEngage { get; set; } = 1.0;
+
+    /// <summary>振り切り側 (荷重を目一杯動かしたとき) の速度の倍率。</summary>
+    public double LoadFactorAtFull { get; set; } = 0.25;
+
+    /// <summary>
+    /// 合計荷重を均す時定数 [ms]。0 で平滑化しない。
+    ///
+    /// 重心は1ユーロフィルタを通っているのに、合計荷重は素のままだった。荷重の軸だけが
+    /// 100Hz のノイズをそのまま受けるので、倍率が毎サンプル跳ね、曲線グラフの縦方向が暴れる。
+    ///
+    /// 単純移動平均ではなく指数移動平均 (EMA) にしてある。実測の記録で同じ平滑度に揃えて
+    /// 比べると、遅れが約1/3で済む:
+    ///
+    ///   ジッタ 0.0007 倍/サンプル … 移動平均20サンプル = 150ms 遅れ / EMA 50ms =  45ms 遅れ
+    ///   ジッタ 0.0005 倍/サンプル … 移動平均50サンプル = 375ms 遅れ / EMA 100ms = 120ms 遅れ
+    ///
+    /// 移動平均 (箱型) は群遅延のわりに高周波の落ち方が悪い。加えて EMA は状態が1つで済み、
+    /// バッファが要らない。
+    ///
+    /// 1ユーロフィルタを使わないのは、ここが閾値判定だから。速さで実効的な平滑度が変わると
+    /// 作動点が微妙にずれる。位置 (カーソル) には適応が効くが、ゲートには素直な一次遅れが合う。
+    ///
+    /// 強くしすぎると比の可動域そのものが縮む点に注意 (実測で 0.85〜1.09 が 400ms では
+    /// 0.90〜1.06 まで痩せた)。閾値を置ける幅を食うので、既定は 100ms に抑えてある。
+    /// </summary>
+    public double LoadSmoothingMs { get; set; } = 100;
+
     public void Reset()
     {
         _clutchEngaged = false;
         _ratioCount = 0;
         _ratioWriteIndex = 0;
+        _hasSmoothedLoad = false;
+        _lastTimestampMs = -1;
+    }
+
+    /// <summary>
+    /// 合計荷重の一次遅れ。dt はサンプルのタイムスタンプから出すので、リプレイでも同じ結果になる。
+    ///
+    /// ここで均した値を使うのは**荷重の軸だけ**。重心は同じサンプルの合計で割って初めて意味を持つし、
+    /// 在席判定は別に時間ヒステリシスを持っているので、どちらもこの平滑化を通してはいけない。
+    /// </summary>
+    private double SmoothLoad(double totalKg, long timestampMs)
+    {
+        double dtMs = _lastTimestampMs < 0 ? 10 : timestampMs - _lastTimestampMs;
+        _lastTimestampMs = timestampMs;
+
+        if (!_hasSmoothedLoad || LoadSmoothingMs <= 1 || dtMs <= 0)
+        {
+            _hasSmoothedLoad = true;
+            _smoothedLoadKg = totalKg;
+            return _smoothedLoadKg;
+        }
+
+        double alpha = 1.0 - Math.Exp(-dtMs / LoadSmoothingMs);
+        _smoothedLoadKg += (totalKg - _smoothedLoadKg) * alpha;
+        return _smoothedLoadKg;
     }
 
     /// <summary>直近数秒で実際に出ていた踏み込み比の範囲。閾値を決めるための目安。</summary>
@@ -148,7 +228,11 @@ public sealed class PointerMapper
                 return _clutchEngaged ? 1 : 0;
 
             case PressureMode.Throttle:
-                return Math.Clamp((ratio - PressureEngageRatio) / span, 0, 1);
+                double u = Math.Clamp((ratio - PressureEngageRatio) / span, 0, 1);
+                double shaped = Math.Pow(u, Math.Max(0.1, LoadExponent));
+                double a = Math.Clamp(LoadFactorAtEngage, 0, 1);
+                double b = Math.Clamp(LoadFactorAtFull, 0, 1);
+                return a + (b - a) * shaped;
 
             default:
                 return 1;
@@ -162,13 +246,16 @@ public sealed class PointerMapper
         if (!frame.Present || !frame.CopValid)
         {
             _clutchEngaged = false;
-            return new PointerCommand(0, 0, 0, 0, 0, Active: false, InDeadzone: false, 0, 0, Engaged: false);
+            _hasSmoothedLoad = false; // 乗り直したときに古い荷重を引きずらない
+            _lastTimestampMs = frame.TimestampMs;
+            return new PointerCommand(0, 0, 0, 0, 0, Active: false, InDeadzone: false, 0, 0, 0, Engaged: false);
         }
 
         // 踏み込みの強さ。基準は可動域を測ったときの合計荷重の中央値なので、「測定時と同じくらい
         // の置き方」が 1.0 になる。足を載せているだけでは動かず、踏み込んだときだけ動く、という
         // クラッチが作れる --- 休めるうえ、足を外したときの暴れも二重に防げる。
-        double pressureRatio = PressureIsAvailable ? frame.TotalKg / ReferenceLoadKg : 1.0;
+        double smoothedLoad = SmoothLoad(frame.TotalKg, frame.TimestampMs);
+        double pressureRatio = PressureIsAvailable ? smoothedLoad / ReferenceLoadKg : 1.0;
         _ratioWindow[_ratioWriteIndex] = pressureRatio;
         _ratioWriteIndex = (_ratioWriteIndex + 1) % RatioWindowSamples;
         _ratioCount++;
@@ -182,7 +269,7 @@ public sealed class PointerMapper
         {
             bool inDeadzone = radius <= Curve.Deadzone;
             return new PointerCommand(0, 0, nx, ny, radius, Active: true, InDeadzone: inDeadzone,
-                pressureRatio, pressureFactor, Engaged: false);
+                pressureRatio, smoothedLoad, pressureFactor, Engaged: false);
         }
 
         // 速度は半径方向へ。単位ベクトルに掛けるので、斜めでも速度の大きさが曲線どおりになる。
@@ -193,7 +280,7 @@ public sealed class PointerMapper
         double vyScreen = InvertY ? vyBoard : -vyBoard;
 
         return new PointerCommand(vx, vyScreen, nx, ny, radius, Active: true, InDeadzone: false,
-            pressureRatio, pressureFactor, Engaged: true);
+            pressureRatio, smoothedLoad, pressureFactor, Engaged: true);
     }
 }
 

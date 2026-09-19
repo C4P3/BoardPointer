@@ -18,9 +18,9 @@ public sealed class MappingPanel : UserControl
     private readonly Button _outputButton = new() { Text = "マウス出力 開始", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
     private readonly Button _calibrateButton = new() { Text = "可動域キャリブレーション (12秒)", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
 
-    private readonly TrackBar _deadzoneBar = new() { Minimum = 0, Maximum = 60, Value = 18, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30 };
-    private readonly TrackBar _exponentBar = new() { Minimum = 50, Maximum = 400, Value = 200, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30 };
-    private readonly TrackBar _speedBar = new() { Minimum = 1, Maximum = 40, Value = 9, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30 };
+    private readonly TrackBar _deadzoneBar = new() { Minimum = 0, Maximum = 60, Value = 18, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _exponentBar = new() { Minimum = 50, Maximum = 400, Value = 200, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _speedBar = new() { Minimum = 1, Maximum = 40, Value = 9, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
     private readonly Label _deadzoneLabel = MakeLabel();
     private readonly Label _exponentLabel = MakeLabel();
     private readonly Label _speedLabel = MakeLabel();
@@ -33,37 +33,38 @@ public sealed class MappingPanel : UserControl
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 150,
-        Margin = new Padding(0, 2, 0, 2),
+        Margin = new Padding(0, 2, 0, 4),
     };
-    private readonly TrackBar _engageBar = new() { Minimum = 50, Maximum = 200, Value = 97, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30 };
-    private readonly TrackBar _fullBar = new() { Minimum = 50, Maximum = 250, Value = 85, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30 };
+    private readonly TrackBar _engageBar = new() { Minimum = 50, Maximum = 200, Value = 97, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _fullBar = new() { Minimum = 50, Maximum = 250, Value = 85, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _loadSmoothBar = new() { Minimum = 0, Maximum = 500, Value = 100, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _loadExponentBar = new() { Minimum = 30, Maximum = 300, Value = 100, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _loadAtEngageBar = new() { Minimum = 0, Maximum = 100, Value = 100, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly TrackBar _loadAtFullBar = new() { Minimum = 0, Maximum = 100, Value = 25, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
+    private readonly Label _loadSmoothLabel = MakeLabel();
+    private readonly Label _loadExponentLabel = MakeLabel();
+    private readonly Label _loadAtEngageLabel = MakeLabel();
+    private readonly Label _loadAtFullLabel = MakeLabel();
+    private readonly Button _loadRangeButton = new() { Text = "荷重の範囲を測る (8秒)", AutoSize = true, Height = 28, FlatStyle = FlatStyle.System, Margin = new Padding(0, 4, 8, 0) };
     private readonly Label _engageLabel = MakeLabel();
     private readonly Label _fullLabel = MakeLabel();
 
-    private readonly Label _reachLabel = new()
-    {
-        AutoSize = false,
-        Width = 230,
-        Height = 36,
-        ForeColor = Color.FromArgb(180, 188, 200),
-        Font = new Font("Consolas", 8.5f),
-    };
-    private readonly Label _stateLabel = new()
-    {
-        AutoSize = false,
-        Width = 230,
-        Height = 36,
-        ForeColor = Color.FromArgb(150, 158, 170),
-        Font = new Font("Consolas", 8.5f),
-    };
+    /// <summary>
+    /// 右の読み取り表示に出す行。このパネルに置くと、つまみが増えるたびに行が溢れる。
+    /// 操作するものと読むものは面を分ける。
+    /// </summary>
+    public string StatusText { get; private set; } = string.Empty;
 
-    private readonly CurveView _curveView = new() { Dock = DockStyle.Right, Width = 250 };
+    private readonly CurveView _curveView = new() { Dock = DockStyle.Right, Width = 215 };
 
     /// <summary>[マウス出力] が押された。実際の有効/無効は MainForm が持つ。</summary>
     public event Action? OutputToggleRequested;
 
     /// <summary>[可動域キャリブレーション] が押された。</summary>
     public event Action? CalibrationRequested;
+
+    /// <summary>[荷重の範囲を測る] が押された。</summary>
+    public event Action? LoadRangeRequested;
 
     public bool ShareLeftRight => _shareLeftRight.Checked;
 
@@ -91,18 +92,20 @@ public sealed class MappingPanel : UserControl
         left.Controls.Add(Stack(_deadzoneLabel, _deadzoneBar));
         left.Controls.Add(Stack(_exponentLabel, _exponentBar));
         left.Controls.Add(Stack(_speedLabel, _speedBar));
+        var smoothStack = Stack(_loadSmoothLabel, _loadSmoothBar);
+        left.Controls.Add(smoothStack);
+        left.SetFlowBreak(smoothStack, true); // ここで1行目を閉じる
 
         _pressureCombo.Items.AddRange(["荷重: 使わない", "荷重: クラッチ", "荷重: 速度"]);
         _pressureCombo.SelectedIndex = 0;
-        var pressureCombo = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 24, 10, 0) };
-        pressureCombo.Controls.Add(_pressureCombo);
+        var pressureCombo = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 14, 6, 0) };
+        pressureCombo.Controls.AddRange([_pressureCombo, _loadRangeButton]);
         left.Controls.Add(pressureCombo);
         left.Controls.Add(Stack(_engageLabel, _engageBar));
         left.Controls.Add(Stack(_fullLabel, _fullBar));
-
-        var info = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(10, 6, 0, 0) };
-        info.Controls.AddRange([_reachLabel, _stateLabel]);
-        left.Controls.Add(info);
+        left.Controls.Add(Stack(_loadExponentLabel, _loadExponentBar));
+        left.Controls.Add(Stack(_loadAtEngageLabel, _loadAtEngageBar));
+        left.Controls.Add(Stack(_loadAtFullLabel, _loadAtFullBar));
 
         Controls.Add(left);
         Controls.Add(_curveView);
@@ -116,14 +119,58 @@ public sealed class MappingPanel : UserControl
         _pressureCombo.SelectedIndexChanged += (_, _) => Apply();
         _engageBar.ValueChanged += (_, _) => Apply();
         _fullBar.ValueChanged += (_, _) => Apply();
+        _loadSmoothBar.ValueChanged += (_, _) => Apply();
+        _loadExponentBar.ValueChanged += (_, _) => Apply();
+        _loadAtEngageBar.ValueChanged += (_, _) => Apply();
+        _loadAtFullBar.ValueChanged += (_, _) => Apply();
+        _loadRangeButton.Click += (_, _) => LoadRangeRequested?.Invoke();
         Apply();
     }
 
-    private static Label MakeLabel() => new() { AutoSize = true, Width = 150, ForeColor = Color.FromArgb(180, 188, 200) };
+    /// <summary>
+    /// 安静時 (比 1.00) が作動と全開の間に無いと、倍率は常に端に張り付いて動かない。
+    /// 両方の閾値を 1.00 より下 (あるいは上) に置いてしまうと起きる。
+    /// 「荷重モードにしたのに効かない」の典型なので、気づけるようにしておく。
+    /// </summary>
+    private string RestOutsideWarning()
+    {
+        double lo = Math.Min(_mapper.PressureEngageRatio, _mapper.PressureFullRatio);
+        double hi = Math.Max(_mapper.PressureEngageRatio, _mapper.PressureFullRatio);
+        return lo <= 1.0 && 1.0 <= hi
+            ? string.Empty
+            : "\n[!] 安静時(1.00)が作動〜全開の外です。\n    倍率が張り付いて効きません。";
+    }
+
+    /// <summary>
+    /// 今の4つの値が結局どう振る舞うのかを、1行の日本語にする。
+    ///
+    /// 作動/振り切りは荷重比、作動側/振り切り側は速度の倍率で、組み合わせの意味が頭の中でしか
+    /// 繋がらない。「浮かせると 100% → 25%」と書けば、触る前に分かる。
+    /// </summary>
+    private string DescribeLoadEffect()
+    {
+        if (_mapper.Pressure == PressureMode.Off)
+        {
+            return string.Empty;
+        }
+
+        string action = _mapper.PressureEngagesWhenLighter ? "浮かせる" : "踏み込む";
+        if (_mapper.Pressure == PressureMode.Clutch)
+        {
+            return $"{action}と動く (はっきり切り替え)";
+        }
+
+        double a = _mapper.LoadFactorAtEngage;
+        double b = _mapper.LoadFactorAtFull;
+        string direction = b > a ? "速くなる" : b < a ? "遅くなる" : "変わらない";
+        return $"{action}と {a:P0} → {b:P0} ({direction})";
+    }
+
+    private static Label MakeLabel() => new() { AutoSize = true, Width = 130, ForeColor = Color.FromArgb(180, 188, 200) };
 
     private static Control Stack(Control top, Control bottom)
     {
-        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 10, 0) };
+        var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 8, 0) };
         stack.Controls.Add(top);
         stack.Controls.Add(bottom);
         return stack;
@@ -140,6 +187,10 @@ public sealed class MappingPanel : UserControl
         // 全開側は作動側より小さくてよい (軽くするほど速い向き)。同値だけは避ける。
         double full = _fullBar.Value / 100.0;
         double engage = _engageBar.Value / 100.0;
+        _mapper.LoadSmoothingMs = _loadSmoothBar.Value;
+        _mapper.LoadExponent = _loadExponentBar.Value / 100.0;
+        _mapper.LoadFactorAtEngage = _loadAtEngageBar.Value / 100.0;
+        _mapper.LoadFactorAtFull = _loadAtFullBar.Value / 100.0;
         _mapper.PressureFullRatio = Math.Abs(full - engage) < 0.02
             ? (full >= engage ? engage + 0.02 : engage - 0.02)
             : full;
@@ -149,10 +200,21 @@ public sealed class MappingPanel : UserControl
         _speedLabel.Text = $"最大速度 : {_mapper.Curve.MaxSpeedPxPerSec:F0} px/s";
         _engageLabel.Text = $"荷重 作動 : {_mapper.PressureEngageRatio:F2} 倍"
                           + (_mapper.Pressure == PressureMode.Off ? string.Empty
-                             : _mapper.PressureEngagesWhenLighter ? " (軽くする)" : " (踏み込む)");
-        _fullLabel.Text = $"荷重 全開 : {_mapper.PressureFullRatio:F2} 倍";
+                             : _mapper.PressureEngagesWhenLighter ? " (浮かせる)" : " (踏み込む)");
+        _fullLabel.Text = $"荷重 振り切り : {_mapper.PressureFullRatio:F2} 倍";
+        _loadSmoothLabel.Text = _mapper.LoadSmoothingMs < 1
+            ? "荷重の平滑 : なし"
+            : $"荷重の平滑 : {_mapper.LoadSmoothingMs:F0} ms";
+        _loadExponentLabel.Text = $"荷重の指数 : {_mapper.LoadExponent:F2}";
+        _loadAtEngageLabel.Text = $"作動側の速度 : {_mapper.LoadFactorAtEngage:P0}";
+        _loadAtFullLabel.Text = $"振り切り側 : {_mapper.LoadFactorAtFull:P0}";
         bool usesPressure = _mapper.Pressure != PressureMode.Off;
         _engageBar.Enabled = usesPressure;
+        _loadSmoothBar.Enabled = usesPressure;
+        _loadExponentBar.Enabled = _mapper.Pressure == PressureMode.Throttle;
+        _loadAtEngageBar.Enabled = _mapper.Pressure == PressureMode.Throttle;
+        _loadAtFullBar.Enabled = _mapper.Pressure == PressureMode.Throttle;
+        _loadRangeButton.Enabled = usesPressure;
         _fullBar.Enabled = _mapper.Pressure == PressureMode.Throttle;
         _curveView.Invalidate();
     }
@@ -166,6 +228,10 @@ public sealed class MappingPanel : UserControl
         _deadzoneBar.Value = Clamp(_deadzoneBar, (int)Math.Round(settings.Deadzone * 100));
         _exponentBar.Value = Clamp(_exponentBar, (int)Math.Round(settings.Exponent * 100));
         _speedBar.Value = Clamp(_speedBar, (int)Math.Round(settings.MaxSpeedPxPerSec / 100));
+        _loadSmoothBar.Value = Clamp(_loadSmoothBar, (int)Math.Round(settings.LoadSmoothingMs));
+        _loadExponentBar.Value = Clamp(_loadExponentBar, (int)Math.Round(settings.LoadExponent * 100));
+        _loadAtEngageBar.Value = Clamp(_loadAtEngageBar, (int)Math.Round(settings.LoadFactorAtEngage * 100));
+        _loadAtFullBar.Value = Clamp(_loadAtFullBar, (int)Math.Round(settings.LoadFactorAtFull * 100));
         _engageBar.Value = Clamp(_engageBar, (int)Math.Round(settings.PressureEngageRatio * 100));
         _fullBar.Value = Clamp(_fullBar, (int)Math.Round(settings.PressureFullRatio * 100));
         _invertY.Checked = settings.InvertY;
@@ -200,6 +266,10 @@ public sealed class MappingPanel : UserControl
         settings.AutoCenter = _autoCenter.Checked;
         settings.PressureMode = _mapper.Pressure.ToString();
         settings.PressureEngageRatio = _mapper.PressureEngageRatio;
+        settings.LoadSmoothingMs = _mapper.LoadSmoothingMs;
+        settings.LoadExponent = _mapper.LoadExponent;
+        settings.LoadFactorAtEngage = _mapper.LoadFactorAtEngage;
+        settings.LoadFactorAtFull = _mapper.LoadFactorAtFull;
         settings.PressureFullRatio = _mapper.PressureFullRatio;
 
         settings.ReachIsCalibrated = _mapper.Reach.IsCalibrated;
@@ -239,14 +309,28 @@ public sealed class MappingPanel : UserControl
         _calibrateButton.Enabled = !calibrating;
     }
 
+    public void SetLoadRangeCalibrating(bool calibrating)
+    {
+        _loadRangeButton.Enabled = !calibrating;
+        _loadRangeButton.Text = calibrating ? "測定中..." : "荷重の範囲を測る (8秒)";
+    }
+
+    /// <summary>測定結果を UI に反映する。</summary>
+    public void SetPressureThresholds(double engage, double full)
+    {
+        _engageBar.Value = Clamp(_engageBar, (int)Math.Round(engage * 100));
+        _fullBar.Value = Clamp(_fullBar, (int)Math.Round(full * 100));
+        Apply();
+    }
+
     /// <summary>UIタイマーから毎回呼ぶ。</summary>
     public void UpdateLive(PointerCommand command, bool outputEnabled)
     {
         var reach = _mapper.Reach;
-        _reachLabel.Text = reach.IsSampling
+        string reachText = reach.IsSampling
             ? $"可動域 測定中 ({reach.SampleCount})\n"
               + $"前{reach.PreviewFrontMm,4:F0} 後{reach.PreviewBackMm,4:F0} 左{reach.PreviewLeftMm,4:F0} 右{reach.PreviewRightMm,4:F0} mm"
-            : $"可動域 {(reach.IsCalibrated ? $"実測 (基準荷重 {reach.ReferenceLoadKg:F1}kg)" : "既定値 (未測定)")}\n"
+            : $"可動域 {(reach.IsCalibrated ? $"実測 (基準 {reach.ReferenceLoadKg:F1}kg)" : "既定値 (未測定)")}\n"
               + $"前{reach.FrontMm,4:F0} 後{reach.BackMm,4:F0} 左{reach.LeftMm,4:F0} 右{reach.RightMm,4:F0} mm";
 
         var range = _mapper.RecentRatioRange();
@@ -255,11 +339,25 @@ public sealed class MappingPanel : UserControl
             command.VelocityYPxPerSec * command.VelocityYPxPerSec);
 
         string state = !command.Active ? "停止 (乗っていない/荷重不足)"
-            : command.InDeadzone ? "デッドゾーン内"
-            : $"{speed,5:F0} px/s";
+            : command.Engaged ? $"{speed:F0} px/s"
+            : command.PressureFactor <= 0 ? "荷重待ち"
+            : "デッドゾーン内";
 
-        _stateLabel.Text = $"半径 {command.NormalizedRadius,5:F2}  {state}\n"
-                         + $"出力 {(outputEnabled ? "ON" : "OFF")}";
+        // 荷重を使っているなら、今の比と直近で実際に出ていた範囲を並べる。閾値をどこに置けるかは
+        // この範囲で決まるので、両方を同時に見せないと判断できない。
+        string pressure = _mapper.Pressure == PressureMode.Off
+            ? string.Empty
+            : _mapper.PressureIsAvailable
+                ? $"\n荷重 {command.PressureRatio:F2} 倍 (直近 {range.Min:F2}〜{range.Max:F2})"
+                  + $"\n倍率 {command.PressureFactor:F2}"
+                  + $"\n{DescribeLoadEffect()}"
+                  + RestOutsideWarning()
+                : "\n[!] 荷重モードは無効 ([重心の原点] が必要)";
+
+        StatusText = reachText
+                   + $"\n半径 {command.NormalizedRadius:F2}  {state}"
+                   + $"\n出力 {(outputEnabled ? "ON" : "OFF")}"
+                   + pressure;
 
         _curveView.SetPosition(command.NormalizedRadius, command.Engaged, command.PressureFactor);
         _curveView.Invalidate();

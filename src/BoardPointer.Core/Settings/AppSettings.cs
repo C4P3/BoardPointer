@@ -39,6 +39,18 @@ public sealed class AppSettings
     /// <summary>"Off" / "Clutch" / "Throttle"。</summary>
     public string PressureMode { get; set; } = "Off";
     public double PressureEngageRatio { get; set; } = 0.97;
+
+    /// <summary>合計荷重を均す時定数 [ms]。0 で平滑化しない。</summary>
+    public double LoadSmoothingMs { get; set; } = 100;
+
+    /// <summary>荷重の応答曲線の指数。</summary>
+    public double LoadExponent { get; set; } = 1.0;
+
+    /// <summary>作動側での速度の倍率。</summary>
+    public double LoadFactorAtEngage { get; set; } = 1.0;
+
+    /// <summary>振り切り側での速度の倍率。作動側より小さくしてよい (浮かせると遅くなる)。</summary>
+    public double LoadFactorAtFull { get; set; } = 0.25;
     public double PressureFullRatio { get; set; } = 0.85;
 
     // --- 測ったもののうち、引き継ぐもの ---

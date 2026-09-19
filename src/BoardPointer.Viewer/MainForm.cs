@@ -82,6 +82,10 @@ public sealed class MainForm : Form
 
     private long _tareDeadlineMs = -1;
     private long _centerDeadlineMs = -1;
+    private readonly LoadRangeCalibration _loadRange = new();
+    private long _loadRangeDeadlineMs = -1;
+    private volatile bool _loadRangeJustFinished;
+    private (double Engage, double Full)? _loadRangeResult;
     private long _reachDeadlineMs = -1;
     private long _lastMappedTimestampMs = -1;
     private volatile bool _reachJustFinished;
@@ -103,7 +107,7 @@ public sealed class MainForm : Form
         _autoSynthetic = autoSynthetic;
         _autoReplayPath = autoReplayPath;
         Text = "BoardPointer Viewer — 重心の可視化と記録";
-        ClientSize = new Size(1120, 800);
+        ClientSize = new Size(1180, 800);
         BackColor = Color.FromArgb(32, 35, 40);
         ForeColor = Color.FromArgb(220, 225, 232);
         StartPosition = FormStartPosition.CenterScreen;
@@ -235,6 +239,7 @@ public sealed class MainForm : Form
         _mappingPanel = new MappingPanel(_mapper) { Dock = DockStyle.Fill };
         _mappingPanel.OutputToggleRequested += ToggleMouseOutput;
         _mappingPanel.CalibrationRequested += BeginReachCalibration;
+        _mappingPanel.LoadRangeRequested += BeginLoadRangeCalibration;
 
         var signalTab = new TabPage("フィルタ") { BackColor = Color.FromArgb(27, 29, 34) };
         signalTab.Controls.Add(BuildFilterPanel());
@@ -250,7 +255,7 @@ public sealed class MainForm : Form
         var settingsTab = new TabPage("設定") { BackColor = Color.FromArgb(27, 29, 34) };
         settingsTab.Controls.Add(_settingsPanel);
 
-        var tabs = new TabControl { Dock = DockStyle.Bottom, Height = 262 };
+        var tabs = new TabControl { Dock = DockStyle.Bottom, Height = 270 };
         tabs.TabPages.Add(mouseTab);
         tabs.TabPages.Add(signalTab);
         tabs.TabPages.Add(settingsTab);
@@ -546,6 +551,23 @@ public sealed class MainForm : Form
         var command = _mapper.Update(frame);
         _latestCommand = command;
 
+        // 荷重の範囲の測定。閾値は「自分がどこまで荷重を動かせるか」で決まるので、感覚ではなく
+        // 実測で置く。可動域の測定と同じ考え方。
+        if (_loadRange.IsSampling)
+        {
+            _loadRange.Feed(command.PressureRatio, _mapper.PressureIsAvailable && command.Active);
+            if (_loadRangeDeadlineMs < 0)
+            {
+                _loadRangeDeadlineMs = sample.TimestampMs + LoadRangeCalibrationMs;
+            }
+            else if (sample.TimestampMs >= _loadRangeDeadlineMs)
+            {
+                _loadRangeResult = _loadRange.FinishSampling();
+                _loadRangeDeadlineMs = -1;
+                _loadRangeJustFinished = true;
+            }
+        }
+
         double dt = _lastMappedTimestampMs < 0 ? 0.01 : (sample.TimestampMs - _lastMappedTimestampMs) / 1000.0;
         _lastMappedTimestampMs = sample.TimestampMs;
 
@@ -576,6 +598,34 @@ public sealed class MainForm : Form
     }
 
     private const int ReachCalibrationMs = 12000;
+    private const int LoadRangeCalibrationMs = 8000;
+
+    /// <summary>
+    /// 荷重の範囲を測って、作動と全開の閾値を実測から置く。
+    ///
+    /// 既定値のままだと、実測の記録で 81% の時間が倍率 0 に張り付き、全開には一度も届いて
+    /// いなかった。「全力が分かりにくい」のは体感したことがないからで、説明を足しても直らない。
+    /// </summary>
+    private void BeginLoadRangeCalibration()
+    {
+        if (_source is null)
+        {
+            _status.Text = "先にソースを繋いでください。";
+            return;
+        }
+        if (!_mapper.PressureIsAvailable)
+        {
+            _status.Text = "先に [重心の原点] を測ってください。基準荷重が無いと荷重比を出せません。";
+            return;
+        }
+
+        _loadRangeDeadlineMs = -1;
+        _loadRangeJustFinished = false;
+        _loadRange.BeginSampling();
+        _mappingPanel.SetLoadRangeCalibrating(true);
+        _status.Text = $"荷重の範囲を測っています ({LoadRangeCalibrationMs / 1000}秒)。"
+                     + "足を一番軽くする・一番踏み込む、を数回繰り返してください。";
+    }
 
     /// <summary>
     /// 原点の自動追従の時定数 [秒]。意図的なゆっくりした操作と競合しない程度に長く取る。
@@ -726,6 +776,23 @@ public sealed class MainForm : Form
             _status.Text = $"重心の原点を取りました (X {_pipeline.Centering.OriginXMm:F1} / Y {_pipeline.Centering.OriginYMm:F1} mm)。";
         }
 
+        if (_loadRangeJustFinished)
+        {
+            _loadRangeJustFinished = false;
+            _mappingPanel.SetLoadRangeCalibrating(false);
+            if (_loadRangeResult is { } result)
+            {
+                _mappingPanel.SetPressureThresholds(result.Engage, result.Full);
+                _status.Text = $"荷重の範囲を測りました: {_loadRange.ObservedMin:F2}〜{_loadRange.ObservedMax:F2} 倍 "
+                             + $"→ 作動 {result.Engage:F2} / 全開 {result.Full:F2} に設定しました。";
+            }
+            else
+            {
+                _status.Text = $"荷重がほとんど動きませんでした ({_loadRange.ObservedMin:F2}〜{_loadRange.ObservedMax:F2} 倍)。"
+                             + "足を浮かせる・踏み込むをはっきり繰り返して、もう一度試してください。";
+            }
+        }
+
         if (_reachJustFinished)
         {
             _reachJustFinished = false;
@@ -813,6 +880,9 @@ public sealed class MainForm : Form
             フィルタ X {f.CopXFilteredMm,7:F1}  Y {f.CopYFilteredMm,7:F1}
             ずれ       {Math.Sqrt(Math.Pow(f.CopXMm - f.CopXFilteredMm, 2) + Math.Pow(f.CopYMm - f.CopYFilteredMm, 2)),7:F1} mm
             分解能     {f.CopResolutionMm,7:F2} mm/count
+
+            -- マウス --
+            {_mappingPanel.StatusText}
             {lowLoadWarning}
             {resolutionWarning}
             {calibrationWarning}

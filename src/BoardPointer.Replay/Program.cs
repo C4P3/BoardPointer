@@ -79,6 +79,10 @@ internal static class Program
               --pressure-ref <kg>  安静時の基準荷重。省略すると --center-seconds の測定値を使う
               --pressure-engage <比> 動き始める荷重比 (既定 0.97)
               --pressure-full <比>   全開になる荷重比 (既定 0.85。作動側より小さければ軽くする向き)
+              --load-smoothing <ms>  合計荷重を均す時定数 (既定 100、0 でなし)
+              --load-exponent <値>   荷重の応答曲線の指数 (既定 1.0)
+              --load-at-engage <倍率> 作動側での速度の倍率 (既定 0)
+              --load-at-full <倍率>   振り切り側での速度の倍率 (既定 1)
               --seconds <秒>       --synth のときの長さ (既定 30)
               --seed <整数>        --synth の乱数種 (既定 1)
 
@@ -445,6 +449,10 @@ internal static class Program
         mapper.ReferenceLoadKg = GetDouble(args, "--pressure-ref", pipeline.Centering.RestingLoadKg);
         mapper.PressureEngageRatio = GetDouble(args, "--pressure-engage", mapper.PressureEngageRatio);
         mapper.PressureFullRatio = GetDouble(args, "--pressure-full", mapper.PressureFullRatio);
+        mapper.LoadSmoothingMs = GetDouble(args, "--load-smoothing", mapper.LoadSmoothingMs);
+        mapper.LoadExponent = GetDouble(args, "--load-exponent", mapper.LoadExponent);
+        mapper.LoadFactorAtEngage = GetDouble(args, "--load-at-engage", mapper.LoadFactorAtEngage);
+        mapper.LoadFactorAtFull = GetDouble(args, "--load-at-full", mapper.LoadFactorAtFull);
         mapper.Curve.Deadzone = GetDouble(args, "--deadzone", mapper.Curve.Deadzone);
         mapper.Curve.Exponent = GetDouble(args, "--exponent", mapper.Curve.Exponent);
         mapper.Curve.MaxSpeedPxPerSec = GetDouble(args, "--max-speed", mapper.Curve.MaxSpeedPxPerSec);
@@ -469,6 +477,7 @@ internal static class Program
         var accumulator = new SubPixelAccumulator();
         var speeds = new List<double>();
         var ratios = new List<double>();
+        var factors = new List<double>();
         double travelPx = 0;
         double emittedPx = 0;
         int active = 0, inDeadzone = 0, moving = 0, pressureBlocked = 0;
@@ -492,6 +501,7 @@ internal static class Program
                 command.VelocityYPxPerSec * command.VelocityYPxPerSec);
             speeds.Add(speed);
             ratios.Add(command.PressureRatio);
+            factors.Add(command.PressureFactor);
 
             if (command.InDeadzone)
             {
@@ -521,7 +531,7 @@ internal static class Program
                         + (mapper.Pressure == PressureMode.Off
                             ? string.Empty
                             : mapper.PressureIsAvailable
-                                ? $" (基準 {mapper.ReferenceLoadKg:F1} kg / 作動 {mapper.PressureEngageRatio:F2} → 全開 {mapper.PressureFullRatio:F2} 倍"
+                                ? $" (基準 {mapper.ReferenceLoadKg:F1} kg / 平滑 {mapper.LoadSmoothingMs:F0}ms / 作動 {mapper.PressureEngageRatio:F2} → 全開 {mapper.PressureFullRatio:F2} 倍"
                                   + $" = {(mapper.PressureEngagesWhenLighter ? "軽くする" : "踏み込む")}向き)"
                                 : " [!] 基準荷重が無いため無効 (--center-seconds か --pressure-ref が要る)"));
         Console.WriteLine();
@@ -543,6 +553,13 @@ internal static class Program
         {
             Console.WriteLine($"  荷重待ち       : {pressureBlocked * 100.0 / active:F1} %  (デッドゾーン外だが荷重が閾値に届いていない)");
             // 閾値が到達可能かは、その記録で実際に出ていた比を見ないと判断できない。
+            // 倍率が毎サンプル跳ねると、曲線グラフの縦方向が暴れ、カーソルの速度もばたつく。
+            var factorSteps = new List<double>();
+            for (int i = 1; i < factors.Count; i++)
+            {
+                factorSteps.Add(Math.Abs(factors[i] - factors[i - 1]));
+            }
+            Console.WriteLine($"  倍率のばたつき : 中央 {Median(factorSteps):F4} / p95 {Percentile(factorSteps, 0.95):F4} (1サンプルあたりの倍率の変化)");
             Console.WriteLine($"  荷重比の分布   : 最小 {ratios.Min():F2} / p5 {Percentile(ratios, 0.05):F2} / 中央 {Median(ratios):F2} / p95 {Percentile(ratios, 0.95):F2} / 最大 {ratios.Max():F2} 倍");
             bool reached = mapper.PressureEngagesWhenLighter
                 ? ratios.Min() <= mapper.PressureEngageRatio
