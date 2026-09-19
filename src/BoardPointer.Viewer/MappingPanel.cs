@@ -261,7 +261,7 @@ public sealed class MappingPanel : UserControl
         _stateLabel.Text = $"半径 {command.NormalizedRadius,5:F2}  {state}\n"
                          + $"出力 {(outputEnabled ? "ON" : "OFF")}";
 
-        _curveView.SetPosition(command.NormalizedRadius, command.Active && !command.InDeadzone);
+        _curveView.SetPosition(command.NormalizedRadius, command.Engaged, command.PressureFactor);
         _curveView.Invalidate();
     }
 }

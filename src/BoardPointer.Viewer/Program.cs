@@ -5,7 +5,7 @@ internal static class Program
     /// <summary>
     /// 引数なしで普通に起動。実機が無い場所で動作を見たいときは --synthetic、記録を流し直したい
     /// ときは --replay &lt;CSV&gt; を付けると、起動直後からソースが繋がった状態になる。
-    /// --seated は座り・足先モードで起動する。
+    /// --seated は座り・足先モードで起動する。--tray は窓を出さずトレイだけで始める。
     /// </summary>
     [STAThread]
     private static void Main(string[] args)
@@ -19,6 +19,10 @@ internal static class Program
             replayPath = args[index + 1];
         }
 
-        Application.Run(new MainForm(args.Contains("--synthetic"), replayPath, args.Contains("--seated")));
+        Application.Run(new MainForm(
+            args.Contains("--synthetic"),
+            replayPath,
+            args.Contains("--seated"),
+            args.Contains("--tray")));
     }
 }

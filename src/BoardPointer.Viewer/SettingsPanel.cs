@@ -83,6 +83,8 @@ public sealed class HotkeyBox : TextBox
 public sealed class SettingsPanel : UserControl
 {
     private readonly Dictionary<HotkeyAction, HotkeyBox> _boxes = [];
+    private readonly CheckBox _minimizeToTray = new() { Text = "窓を閉じたらトレイに格納する (終了しない)", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    private readonly CheckBox _startMinimized = new() { Text = "起動時はトレイだけで始める", AutoSize = true, Margin = new Padding(0, 2, 0, 0) };
     private readonly Label _note = new()
     {
         AutoSize = false,
@@ -132,6 +134,11 @@ public sealed class SettingsPanel : UserControl
             layout.Controls.Add(box);
         }
 
+        layout.Controls.Add(new Label { Text = "常駐", AutoSize = true, Margin = new Padding(0, 10, 8, 0), ForeColor = Color.FromArgb(200, 208, 218) });
+        var trayOptions = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 0, 0) };
+        trayOptions.Controls.AddRange([_minimizeToTray, _startMinimized]);
+        layout.Controls.Add(trayOptions);
+
         layout.Controls.Add(new Label { Text = string.Empty, AutoSize = true });
         layout.Controls.Add(_note);
         Controls.Add(layout);
@@ -139,6 +146,8 @@ public sealed class SettingsPanel : UserControl
         _note.Text = "枠をクリックしてからキーを押すと割り当てが変わります (Esc で解除)。\n"
                    + "「マウス出力 入/切」は必ず割り当てておいてください。出力中はこの窓を操作しにくくなります。\n"
                    + $"設定の保存先: {SettingsStore.DefaultPath}";
+
+        _note.Height = 56;
     }
 
     public void ApplySettings(AppSettings settings)
@@ -147,6 +156,8 @@ public sealed class SettingsPanel : UserControl
         {
             box.SetBinding(settings.For(action));
         }
+        _minimizeToTray.Checked = settings.MinimizeToTray;
+        _startMinimized.Checked = settings.StartMinimized;
     }
 
     public void WriteTo(AppSettings settings)
@@ -155,6 +166,8 @@ public sealed class SettingsPanel : UserControl
         settings.LeftClick = _boxes[HotkeyAction.LeftClick].Binding;
         settings.RightClick = _boxes[HotkeyAction.RightClick].Binding;
         settings.RecenterOrigin = _boxes[HotkeyAction.RecenterOrigin].Binding;
+        settings.MinimizeToTray = _minimizeToTray.Checked;
+        settings.StartMinimized = _startMinimized.Checked;
     }
 
     /// <summary>登録できなかった割り当てを赤くして知らせる。</summary>

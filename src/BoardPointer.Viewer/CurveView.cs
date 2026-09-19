@@ -13,6 +13,7 @@ public sealed class CurveView : Control
     private ResponseCurve? _curve;
     private double _radius;
     private bool _active;
+    private double _pressureFactor = 1.0;
 
     public CurveView()
     {
@@ -23,10 +24,15 @@ public sealed class CurveView : Control
 
     public void SetCurve(ResponseCurve curve) => _curve = curve;
 
-    public void SetPosition(double normalizedRadius, bool active)
+    /// <param name="pressureFactor">
+    /// 荷重モードによる倍率 (0〜1)。曲線の値はこれを掛けた後が実際の速度なので、グラフにも
+    /// 反映しないと「グラフでは出ているのにカーソルが動かない」という食い違いが起きる。
+    /// </param>
+    public void SetPosition(double normalizedRadius, bool active, double pressureFactor)
     {
         _radius = normalizedRadius;
         _active = active;
+        _pressureFactor = Math.Clamp(pressureFactor, 0, 1);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -79,22 +85,33 @@ public sealed class CurveView : Control
         g.DrawString("px/s", font, labelBrush, 2, top + 10);
         g.DrawString("0", font, labelBrush, 20, top + plotH - 6);
 
-        // 曲線本体。
-        var points = new List<PointF>();
+        // 曲線は2本描く。細い薄い線が荷重を掛ける前の形、太い線が今の荷重での実効カーブ。
+        // 荷重モードを使っていれば (倍率 < 1) 2本が離れ、どれだけ絞られているかが目で分かる。
+        var basePoints = new List<PointF>();
+        var effectivePoints = new List<PointF>();
         for (int i = 0; i <= 120; i++)
         {
             double r = maxRadius * i / 120.0;
-            points.Add(new PointF(ToX(r), ToY(_curve.SpeedAt(r))));
+            double speed = _curve.SpeedAt(r);
+            basePoints.Add(new PointF(ToX(r), ToY(speed)));
+            effectivePoints.Add(new PointF(ToX(r), ToY(speed * _pressureFactor)));
+        }
+
+        if (_pressureFactor < 0.999)
+        {
+            using var basePen = new Pen(Color.FromArgb(70, 120, 200, 255), 1f);
+            g.DrawLines(basePen, basePoints.ToArray());
+            g.DrawString($"荷重 ×{_pressureFactor:F2}", font, labelBrush, left + 4, top + 1);
         }
         using (var curvePen = new Pen(Color.FromArgb(120, 200, 255), 2f))
         {
-            g.DrawLines(curvePen, points.ToArray());
+            g.DrawLines(curvePen, effectivePoints.ToArray());
         }
 
-        // 今いる場所。
+        // 今いる場所。マーカーは実効カーブの上に置く --- ここが実際に出ている速度。
         double radius = Math.Clamp(_radius, 0, maxRadius);
         float markerX = ToX(radius);
-        float markerY = ToY(_curve.SpeedAt(radius));
+        float markerY = ToY(_curve.SpeedAt(radius) * _pressureFactor);
         using (var markerPen = new Pen(Color.FromArgb(90, 255, 255, 255), 1f))
         {
             g.DrawLine(markerPen, markerX, top, markerX, top + plotH);

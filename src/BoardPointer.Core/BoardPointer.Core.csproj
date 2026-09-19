@@ -15,4 +15,11 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 32feet.NET (.NET Framework 時代のアセンブリ) が内部で要求する。無いと
+         BluetoothClient の生成時に FileNotFoundException になり、SYNC ペアリングだけが
+         静かに失敗する。ボードを繋ぐ側は P/Invoke だけで動くので、気づきにくい。 -->
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="8.0.0" />
+  </ItemGroup>
+
 </Project>

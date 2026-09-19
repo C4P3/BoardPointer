@@ -73,6 +73,12 @@ public sealed class MainForm : Form
     private MappingPanel _mappingPanel = null!;
     private SettingsPanel _settingsPanel = null!;
     private HotkeyManager? _hotkeys;
+    private TrayController? _tray;
+
+    // トレイの [終了] から閉じたときだけ本当に終わる。窓の × はトレイへの格納として扱う。
+    private bool _exiting;
+    private bool _startHidden;
+    private bool _visibleCoreHandled;
 
     private long _tareDeadlineMs = -1;
     private long _centerDeadlineMs = -1;
@@ -91,8 +97,9 @@ public sealed class MainForm : Form
     private readonly bool _autoSynthetic;
     private readonly string? _autoReplayPath;
 
-    public MainForm(bool autoSynthetic = false, string? autoReplayPath = null, bool seated = false)
+    public MainForm(bool autoSynthetic = false, string? autoReplayPath = null, bool seated = false, bool tray = false)
     {
+        _startHidden = tray;
         _autoSynthetic = autoSynthetic;
         _autoReplayPath = autoReplayPath;
         Text = "BoardPointer Viewer — 重心の可視化と記録";
@@ -130,6 +137,7 @@ public sealed class MainForm : Form
         ApplyOptions();
 
         ApplySettings();
+        _startHidden |= _settings.StartMinimized;
 
         _uiTimer.Tick += OnUiTick;
         _uiTimer.Start();
@@ -728,6 +736,14 @@ public sealed class MainForm : Form
     
         }
 
+        _tray?.SetState(_source is not null, _mouseEnabled, _status.Text, _settings.ToggleOutput.ToString());
+
+        // 常駐中は窓が見えていない。隠れている面の再描画と文字列生成は素通りさせる。
+        if (!Visible)
+        {
+            return;
+        }
+
         _mappingPanel.UpdateLive(_latestCommand, _mouseEnabled);
         _boardView.Invalidate();
         _readout.SetText(BuildReadout());
@@ -803,10 +819,37 @@ public sealed class MainForm : Form
             """;
     }
 
-    protected override void OnShown(EventArgs e)
+    // グローバルショートカット。マウス出力中はこの窓のボタンを押しに行くのが難しくなるので、
+    // フォーカスに依らず効く経路が要る。特に「出力を止める」は無いと詰む。
+    protected override void OnHandleCreated(EventArgs e)
     {
-        base.OnShown(e);
+        base.OnHandleCreated(e);
+        _hotkeys = new HotkeyManager(Handle);
+        _hotkeys.Register(_settings);
+        ReportHotkeyFailures();
 
+        _tray = new TrayController();
+        _tray.ConnectRequested += () => { if (_source is null) { ConnectLive(); } else { StopSource("停止しました"); } };
+        _tray.OutputToggleRequested += ToggleMouseOutput;
+        _tray.TareRequested += BeginTare;
+        _tray.CenterRequested += BeginCentering;
+        _tray.RecenterRequested += RecenterOriginNow;
+        _tray.ShowWindowRequested += ShowWindowFromTray;
+        _tray.ExitRequested += () => { _exiting = true; Close(); };
+
+        // 窓を出さずに始めるときも、ソースは動かし始める。
+        BeginInvoke(StartAutoSource);
+    }
+
+    private void ShowWindowFromTray()
+    {
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    private void StartAutoSource()
+    {
         if (_autoReplayPath is not null && File.Exists(_autoReplayPath))
         {
             StartSource(ReplaySource.FromCsv(_autoReplayPath), loop: true);
@@ -817,14 +860,43 @@ public sealed class MainForm : Form
         }
     }
 
-    // グローバルショートカット。マウス出力中はこの窓のボタンを押しに行くのが難しくなるので、
-    // フォーカスに依らず効く経路が要る。特に「出力を止める」は無いと詰む。
-    protected override void OnHandleCreated(EventArgs e)
+    // 起動時にトレイだけで始めるための細工。Application.Run は最初に窓を出そうとするので、
+    // その1回だけ握りつぶす。OnShown も走らなくなるため、ソースの起動は OnHandleCreated に置く。
+    protected override void SetVisibleCore(bool value)
     {
-        base.OnHandleCreated(e);
-        _hotkeys = new HotkeyManager(Handle);
-        _hotkeys.Register(_settings);
-        ReportHotkeyFailures();
+        if (_startHidden && !_visibleCoreHandled)
+        {
+            _visibleCoreHandled = true;
+            // 窓を出さないと既定ではハンドルが作られず、OnHandleCreated に置いた
+            // トレイとショートカットの初期化が走らない。ここで明示的に作る。
+            if (!IsHandleCreated)
+            {
+                CreateHandle();
+            }
+            base.SetVisibleCore(false);
+            return;
+        }
+        base.SetVisibleCore(value);
+    }
+
+    /// <summary>
+    /// 窓の × はトレイへの格納。常駐して使う道具なので、閉じるたびにボードを繋ぎ直すことになる
+    /// 「即終了」は既定として不便。本当に終わるのはトレイの [終了] から。
+    /// </summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        bool mustReallyExit = e.CloseReason is CloseReason.WindowsShutDown
+            or CloseReason.TaskManagerClosing
+            or CloseReason.ApplicationExitCall;
+
+        if (!_exiting && !mustReallyExit && _settings.MinimizeToTray)
+        {
+            e.Cancel = true;
+            SaveSettings();
+            Hide();
+            return;
+        }
+        base.OnFormClosing(e);
     }
 
     protected override void WndProc(ref Message m)
@@ -887,6 +959,7 @@ public sealed class MainForm : Form
         _mouseEnabled = false;
         SaveSettings();
         _hotkeys?.Dispose();
+        _tray?.Dispose();
         _pairingCts?.Cancel();
         StopSource(null);
         base.OnFormClosed(e);

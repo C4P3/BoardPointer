@@ -51,6 +51,14 @@ public sealed class AppSettings
     /// <summary>安静時の基準荷重 [kg]。0 なら未測定で、荷重モードは無効になる。</summary>
     public double ReferenceLoadKg { get; set; }
 
+    // --- 常駐 ---
+
+    /// <summary>窓を閉じても終了せずトレイに残る。既定で有効 --- 常駐して使うのが本来の形。</summary>
+    public bool MinimizeToTray { get; set; } = true;
+
+    /// <summary>起動時に窓を出さずトレイだけで始める。</summary>
+    public bool StartMinimized { get; set; }
+
     // --- ショートカット ---
     public HotkeyBinding ToggleOutput { get; set; } = new(0, 0x78);      // F9
     public HotkeyBinding LeftClick { get; set; } = new(0, 0x79);         // F10

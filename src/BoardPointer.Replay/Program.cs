@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using BoardPointer.Core.Bluetooth;
 using BoardPointer.Core.Hid;
 using BoardPointer.Core.Mapping;
 using BoardPointer.Core.Pipeline;
@@ -37,6 +38,10 @@ internal static class Program
             {
                 return RunImportCalibration(args);
             }
+            if (args[0] == "--bluetooth-selftest")
+            {
+                return RunBluetoothSelfTest();
+            }
             return args[0] == "--synth" ? RunSynth(args) : RunReplay(args);
         }
         catch (Exception ex)
@@ -54,6 +59,7 @@ internal static class Program
               BoardPointer.Replay --synth <出力CSV> [...]   実機無しで試すための合成データを作る
               BoardPointer.Replay --mouse-selftest         カーソルが指示どおり動くかを1回試す
               BoardPointer.Replay --import-calib <生CSV>   記録に入っている工場較正を保存して使い回す
+              BoardPointer.Replay --bluetooth-selftest     Bluetooth ライブラリが読めるかを確認する
 
             オプション:
               --out <CSV>          各段の値 (kg, 重心, フィルタ後, 在席) を書き出す
@@ -129,6 +135,34 @@ internal static class Program
         Console.WriteLine($"  感度 {1.0 / header.Calibration.AverageKilogramsPerCount:F1} カウント/kg");
         Console.WriteLine("Viewer は、接続時に読み出しが失敗したらこれを使います。");
         return 0;
+    }
+
+    /// <summary>
+    /// 32feet.NET が読み込めるかだけを確かめる。
+    ///
+    /// これは配布形態の検査。あの DLL は .NET Framework 時代のアセンブリで、単一ファイル publish
+    /// との相性が最も怪しい部分にあたる。読み込みに失敗しても、SYNC ペアリングを押すまで誰も
+    /// 気づかない --- ボードを繋ぐ側は P/Invoke だけで動いてしまうため。先に潰しておく。
+    /// </summary>
+    private static int RunBluetoothSelfTest()
+    {
+        try
+        {
+            var outcome = BalanceBoardPairing.PairAndInstall(
+                cancellationToken: new CancellationToken(canceled: true));
+
+            // 即キャンセルなので Cancelled が返るのが正常。ここまで来れば DLL は読めている。
+            Console.WriteLine(outcome.Result == PairingResult.Cancelled
+                ? "OK。Bluetooth ライブラリ (32feet.NET) を読み込めています。"
+                : $"読み込めましたが、想定外の結果でした: {outcome.Result} {outcome.Message}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[!] Bluetooth ライブラリを読み込めません: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine("    単一ファイル publish で InTheHand.Net.Personal.dll が落ちている可能性があります。");
+            return 1;
+        }
     }
 
     private static int RunSynth(string[] args)
