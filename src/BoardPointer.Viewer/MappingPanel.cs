@@ -1,4 +1,5 @@
 using BoardPointer.Core.Mapping;
+using BoardPointer.Core.Settings;
 
 namespace BoardPointer.Viewer;
 
@@ -14,7 +15,7 @@ public sealed class MappingPanel : UserControl
 {
     private readonly PointerMapper _mapper;
 
-    private readonly Button _outputButton = new() { Text = "マウス出力 開始 (F9)", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
+    private readonly Button _outputButton = new() { Text = "マウス出力 開始", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
     private readonly Button _calibrateButton = new() { Text = "可動域キャリブレーション (12秒)", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
 
     private readonly TrackBar _deadzoneBar = new() { Minimum = 0, Maximum = 60, Value = 18, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30 };
@@ -156,9 +157,81 @@ public sealed class MappingPanel : UserControl
         _curveView.Invalidate();
     }
 
+    /// <summary>
+    /// 保存された設定を流し込む。スライダーに書くと ValueChanged 経由で Apply が走るので、
+    /// マッパーへの反映は自動で揃う。
+    /// </summary>
+    public void ApplySettings(AppSettings settings)
+    {
+        _deadzoneBar.Value = Clamp(_deadzoneBar, (int)Math.Round(settings.Deadzone * 100));
+        _exponentBar.Value = Clamp(_exponentBar, (int)Math.Round(settings.Exponent * 100));
+        _speedBar.Value = Clamp(_speedBar, (int)Math.Round(settings.MaxSpeedPxPerSec / 100));
+        _engageBar.Value = Clamp(_engageBar, (int)Math.Round(settings.PressureEngageRatio * 100));
+        _fullBar.Value = Clamp(_fullBar, (int)Math.Round(settings.PressureFullRatio * 100));
+        _invertY.Checked = settings.InvertY;
+        _shareLeftRight.Checked = settings.ShareLeftRight;
+        _autoCenter.Checked = settings.AutoCenter;
+        _pressureCombo.SelectedIndex = settings.PressureMode switch
+        {
+            "Clutch" => 1,
+            "Throttle" => 2,
+            _ => 0,
+        };
+
+        // 可動域と基準荷重は測るのに12秒かかるうえ、その人の体と姿勢にしか依存しないので引き継ぐ。
+        if (settings.ReachIsCalibrated)
+        {
+            _mapper.Reach.FrontMm = settings.ReachFrontMm;
+            _mapper.Reach.BackMm = settings.ReachBackMm;
+            _mapper.Reach.LeftMm = settings.ReachLeftMm;
+            _mapper.Reach.RightMm = settings.ReachRightMm;
+            _mapper.Reach.MarkRestored(settings.ReferenceLoadKg);
+        }
+        Apply();
+    }
+
+    public void WriteTo(AppSettings settings)
+    {
+        settings.Deadzone = _mapper.Curve.Deadzone;
+        settings.Exponent = _mapper.Curve.Exponent;
+        settings.MaxSpeedPxPerSec = _mapper.Curve.MaxSpeedPxPerSec;
+        settings.InvertY = _invertY.Checked;
+        settings.ShareLeftRight = _shareLeftRight.Checked;
+        settings.AutoCenter = _autoCenter.Checked;
+        settings.PressureMode = _mapper.Pressure.ToString();
+        settings.PressureEngageRatio = _mapper.PressureEngageRatio;
+        settings.PressureFullRatio = _mapper.PressureFullRatio;
+
+        settings.ReachIsCalibrated = _mapper.Reach.IsCalibrated;
+        settings.ReachFrontMm = _mapper.Reach.FrontMm;
+        settings.ReachBackMm = _mapper.Reach.BackMm;
+        settings.ReachLeftMm = _mapper.Reach.LeftMm;
+        settings.ReachRightMm = _mapper.Reach.RightMm;
+        settings.ReferenceLoadKg = _mapper.Reach.ReferenceLoadKg;
+    }
+
+    private static int Clamp(TrackBar bar, int value) => Math.Clamp(value, bar.Minimum, bar.Maximum);
+
+    private string _outputHotkeyLabel = string.Empty;
+    private bool _outputEnabled;
+
     public void SetOutputEnabled(bool enabled)
     {
-        _outputButton.Text = enabled ? "マウス出力 停止 (F9)" : "マウス出力 開始 (F9)";
+        _outputEnabled = enabled;
+        UpdateOutputButton();
+    }
+
+    /// <summary>ボタンにも実際の割り当てを出す。設定で変えたのに「F9」と書いてあると嘘になる。</summary>
+    public void SetOutputHotkeyLabel(string label)
+    {
+        _outputHotkeyLabel = label;
+        UpdateOutputButton();
+    }
+
+    private void UpdateOutputButton()
+    {
+        string suffix = string.IsNullOrEmpty(_outputHotkeyLabel) ? string.Empty : $" ({_outputHotkeyLabel})";
+        _outputButton.Text = (_outputEnabled ? "マウス出力 停止" : "マウス出力 開始") + suffix;
     }
 
     public void SetCalibrating(bool calibrating)

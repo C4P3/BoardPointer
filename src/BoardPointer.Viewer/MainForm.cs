@@ -4,6 +4,7 @@ using BoardPointer.Core.Mapping;
 using BoardPointer.Core.Pipeline;
 using BoardPointer.Core.Recording;
 using BoardPointer.Core.Sampling;
+using BoardPointer.Core.Settings;
 
 namespace BoardPointer.Viewer;
 
@@ -68,7 +69,10 @@ public sealed class MainForm : Form
 
     private readonly PointerMapper _mapper = new();
     private readonly MouseOutput _mouseOutput = new();
+    private readonly AppSettings _settings = SettingsStore.Load();
     private MappingPanel _mappingPanel = null!;
+    private SettingsPanel _settingsPanel = null!;
+    private HotkeyManager? _hotkeys;
 
     private long _tareDeadlineMs = -1;
     private long _centerDeadlineMs = -1;
@@ -115,7 +119,7 @@ public sealed class MainForm : Form
 
         _modeCombo.Items.AddRange(["立ち", "座り・足先"]);
         _modeCombo.SelectedIndexChanged += (_, _) => ApplyPreset();
-        _modeCombo.SelectedIndex = seated ? 1 : 0;
+        _modeCombo.SelectedIndex = seated || _settings.PostureMode == "SeatedFoot" ? 1 : 0;
         _recordButton.Click += (_, _) => ToggleRecording();
 
         _minCutoffBar.ValueChanged += (_, _) => ApplyOptions();
@@ -125,8 +129,68 @@ public sealed class MainForm : Form
         _tareCheck.CheckedChanged += (_, _) => ApplyOptions();
         ApplyOptions();
 
+        ApplySettings();
+
         _uiTimer.Tick += OnUiTick;
         _uiTimer.Start();
+    }
+
+    /// <summary>
+    /// 保存された設定を UI に流し込む。姿勢のプリセットより後に走らせること --- プリセットは
+    /// カットオフなどを既定値で上書きするので、順番が逆だと保存値が消える。
+    /// </summary>
+    private void ApplySettings()
+    {
+        _minCutoffBar.Value = Math.Clamp((int)Math.Round(_settings.MinCutoffHz * 100), _minCutoffBar.Minimum, _minCutoffBar.Maximum);
+        _betaBar.Value = Math.Clamp((int)Math.Round(_settings.Beta * 100000), _betaBar.Minimum, _betaBar.Maximum);
+        _trailBar.Value = Math.Clamp(_settings.TrailLength, _trailBar.Minimum, _trailBar.Maximum);
+        _filterCheck.Checked = _settings.FilterEnabled;
+        _tareCheck.Checked = _settings.TareEnabled;
+        _mappingPanel.ApplySettings(_settings);
+        _mappingPanel.SetOutputHotkeyLabel(_settings.ToggleOutput.ToString());
+        _settingsPanel.ApplySettings(_settings);
+        ApplyOptions();
+    }
+
+    private void CollectSettings()
+    {
+        _settings.PostureMode = _modeCombo.SelectedIndex == 1 ? "SeatedFoot" : "Standing";
+        _settings.MinCutoffHz = _options.MinCutoffHz;
+        _settings.Beta = _options.Beta;
+        _settings.TrailLength = _trailBar.Value;
+        _settings.FilterEnabled = _filterCheck.Checked;
+        _settings.TareEnabled = _tareCheck.Checked;
+        _mappingPanel.WriteTo(_settings);
+        _settingsPanel.WriteTo(_settings);
+    }
+
+    private void SaveSettings()
+    {
+        CollectSettings();
+        SettingsStore.TrySave(_settings);
+    }
+
+    private void OnHotkeysChanged()
+    {
+        _settingsPanel.WriteTo(_settings);
+        _mappingPanel.SetOutputHotkeyLabel(_settings.ToggleOutput.ToString());
+        _hotkeys?.Register(_settings);
+        ReportHotkeyFailures();
+        SettingsStore.TrySave(_settings);
+    }
+
+    private void ReportHotkeyFailures()
+    {
+        if (_hotkeys is null)
+        {
+            return;
+        }
+        _settingsPanel.MarkFailed(_hotkeys.Failed);
+        if (_hotkeys.Failed.Count > 0)
+        {
+            string names = string.Join("、", _hotkeys.Failed.Select(AppSettings.Label));
+            _status.Text = $"[!] 登録できなかったショートカットがあります (他のアプリが使用中): {names}";
+        }
     }
 
     private static Button MakeButton(string text) => new()
@@ -155,7 +219,7 @@ public sealed class MainForm : Form
     }
 
     /// <summary>
-    /// 下段はタブ2枚。信号のつまみ (フィルタ) と操作のつまみ (マウス) は詰める局面が別なので、
+    /// 下段はタブ3枚。信号のつまみ (フィルタ) と操作のつまみ (マウス) は詰める局面が別なので、
     /// 同時に出すと窓が狭くなるだけで、どちらも触りにくくなる。
     /// </summary>
     private Control BuildBottomTabs()
@@ -170,9 +234,18 @@ public sealed class MainForm : Form
         var mouseTab = new TabPage("マウス") { BackColor = Color.FromArgb(27, 29, 34) };
         mouseTab.Controls.Add(_mappingPanel);
 
+        _settingsPanel = new SettingsPanel { Dock = DockStyle.Fill };
+        _settingsPanel.HotkeysChanged += OnHotkeysChanged;
+        // 割り当てを取る間はグローバル登録を外す。外さないと押したキーが横取りされて届かない。
+        _settingsPanel.CaptureStarted += () => _hotkeys?.Suspend();
+        _settingsPanel.CaptureEnded += () => { _hotkeys?.Resume(_settings); ReportHotkeyFailures(); };
+        var settingsTab = new TabPage("設定") { BackColor = Color.FromArgb(27, 29, 34) };
+        settingsTab.Controls.Add(_settingsPanel);
+
         var tabs = new TabControl { Dock = DockStyle.Bottom, Height = 262 };
         tabs.TabPages.Add(mouseTab);
         tabs.TabPages.Add(signalTab);
+        tabs.TabPages.Add(settingsTab);
         return tabs;
     }
 
@@ -504,7 +577,7 @@ public sealed class MainForm : Form
 
     /// <summary>
     /// マウス出力の入り切り。押して有効にすると、以降このアプリがカーソルを動かす --- つまり
-    /// この窓のボタンを押しに行くのが難しくなる。F9 をグローバルホットキーとして登録してあるのは
+    /// この窓のボタンを押しに行くのが難しくなる。グローバルショートカットを登録してあるのは
     /// そのためで、カーソルが暴れても必ず止められる。
     /// </summary>
     private void ToggleMouseOutput()
@@ -519,7 +592,7 @@ public sealed class MainForm : Form
         _mouseOutput.Reset();
         _mappingPanel.SetOutputEnabled(_mouseEnabled);
         _status.Text = _mouseEnabled
-            ? "マウス出力を開始しました。止めるときは F9 (この窓が後ろにいても効きます)。"
+            ? $"マウス出力を開始しました。止めるときは {_settings.ToggleOutput} (この窓が後ろにいても効きます)。"
             : "マウス出力を停止しました。";
     }
 
@@ -624,8 +697,8 @@ public sealed class MainForm : Form
             _tareJustFinished = false;
             double onBoard = _pipeline.Tare.SampledTotalMedian;
             // 空のボードで測れていないと、そのゼロ点は足の重さごと引いてしまう。黙って進めない。
-            // 閾値も表示も単位に合わせる --- 生カウントモードでは空のボードでも合計が6万前後あるので、
-            // kg 用の 3.0 を当てると「62736 kg 載っています」のような無意味な警告になる。
+            // 工場較正が無いと原点が分からないので、空だったかを判定できない。判定できないなら、
+            // できないと言うのが正しい。
             if (!_pipeline.CanCheckEmptyBoard)
             {
                 // 生カウントには原点が無いので、空だったかどうかを判定できない。
@@ -651,6 +724,8 @@ public sealed class MainForm : Form
             var r = _mapper.Reach;
             _mappingPanel.SetCalibrating(false);
             _status.Text = $"可動域を測りました: 前 {r.FrontMm:F0} / 後 {r.BackMm:F0} / 左 {r.LeftMm:F0} / 右 {r.RightMm:F0} mm。";
+            SaveSettings(); // 12秒かけた測定なので、終了を待たずに書いておく
+    
         }
 
         _mappingPanel.UpdateLive(_latestCommand, _mouseEnabled);
@@ -742,43 +817,76 @@ public sealed class MainForm : Form
         }
     }
 
-    // F9 をグローバルホットキーとして登録する。マウス出力中はこの窓のボタンを押しに行くのが
-    // 難しくなるので、フォーカスに依らず必ず止められる経路が要る。
-    private const int HotkeyId = 0xB001;
-    private const int WmHotkey = 0x0312;
-    private const int VkF9 = 0x78;
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-
+    // グローバルショートカット。マウス出力中はこの窓のボタンを押しに行くのが難しくなるので、
+    // フォーカスに依らず効く経路が要る。特に「出力を止める」は無いと詰む。
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        if (!RegisterHotKey(Handle, HotkeyId, 0, VkF9))
-        {
-            // 他のアプリに取られている場合。致命的ではないので、窓のボタンで操作してもらう。
-            _status.Text = "F9 を登録できませんでした (他のアプリが使用中)。停止はこの窓のボタンから。";
-        }
+        _hotkeys = new HotkeyManager(Handle);
+        _hotkeys.Register(_settings);
+        ReportHotkeyFailures();
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WmHotkey && m.WParam.ToInt32() == HotkeyId)
+        var action = _hotkeys?.Match(ref m);
+        if (action is not null)
         {
-            ToggleMouseOutput();
+            RunHotkey(action.Value);
             return;
         }
         base.WndProc(ref m);
+    }
+
+    private void RunHotkey(HotkeyAction action)
+    {
+        switch (action)
+        {
+            case HotkeyAction.ToggleOutput:
+                ToggleMouseOutput();
+                break;
+
+            case HotkeyAction.LeftClick:
+                MouseOutput.Click(rightButton: false);
+                break;
+
+            case HotkeyAction.RightClick:
+                MouseOutput.Click(rightButton: true);
+                break;
+
+            case HotkeyAction.RecenterOrigin:
+                RecenterOriginNow();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 重心の原点を今の位置に即座に合わせる。ボタンの [重心の原点 (3秒)] とは用途が違い、
+    /// 「操作中にカーソルが一方向に流れ始めた」と感じた瞬間に押すためのもの。
+    ///
+    /// 1サンプルではなくフィルタ後の重心を使う。生値だと押した瞬間のノイズがそのまま原点になる。
+    /// </summary>
+    private void RecenterOriginNow()
+    {
+        if (!_hasFrame || !_latest.CopValid)
+        {
+            _status.Text = "重心が取れていないので原点を合わせられません (乗っていない / 荷重不足)。";
+            return;
+        }
+
+        var frame = _latest;
+        _pipeline.Centering.SetOrigin(
+            frame.CopXFilteredMm + _pipeline.Centering.OriginXMm,
+            frame.CopYFilteredMm + _pipeline.Centering.OriginYMm);
+        _status.Text = $"重心の原点を今の位置に合わせました (X {_pipeline.Centering.OriginXMm:F1} / Y {_pipeline.Centering.OriginYMm:F1} mm)。";
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _uiTimer.Stop();
         _mouseEnabled = false;
-        UnregisterHotKey(Handle, HotkeyId);
+        SaveSettings();
+        _hotkeys?.Dispose();
         _pairingCts?.Cancel();
         StopSource(null);
         base.OnFormClosed(e);

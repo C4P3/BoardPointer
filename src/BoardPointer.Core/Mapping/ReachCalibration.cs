@@ -131,6 +131,16 @@ public sealed class ReachCalibration
 
     public void Cancel() => IsSampling = false;
 
+    /// <summary>
+    /// 保存された可動域を復元したことにする。実測と同じ扱いにしてよいのは、可動域がその人の体と
+    /// 姿勢だけで決まり、ボードの置き方には依存しないため（原点やゼロ点とは性質が違う）。
+    /// </summary>
+    public void MarkRestored(double referenceLoadKg)
+    {
+        ReferenceLoadKg = referenceLoadKg;
+        IsCalibrated = true;
+    }
+
     private static double Reduce(List<double> values, double fallback)
     {
         if (values.Count < MinimumSamplesPerDirection)

@@ -65,6 +65,26 @@ public sealed class MouseOutput
         return (dx, dy, after.X - before.X, after.Y - before.Y);
     }
 
+    /// <summary>
+    /// クリックを1回送る。押してすぐ離す。
+    ///
+    /// カーソルを動かせても押せなければマウスとして完成しないので、これは親切機能ではなく本体の
+    /// 一部。今はキーボードのショートカットから呼ぶが、送っている入力自体は本物のマウスと同じ
+    /// なので、あとで足の動作 (荷重のタップなど) から呼ぶようにしても出力側は変えなくていい。
+    /// </summary>
+    public static void Click(bool rightButton = false)
+    {
+        uint down = rightButton ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+        uint up = rightButton ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+
+        INPUT[] inputs =
+        [
+            new INPUT { type = INPUT_MOUSE, u = new InputUnion { mi = new MOUSEINPUT { dwFlags = down } } },
+            new INPUT { type = INPUT_MOUSE, u = new InputUnion { mi = new MOUSEINPUT { dwFlags = up } } },
+        ];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
     private static void MoveBy(int dx, int dy)
     {
         if (!GetCursorPos(out POINT cursor))
@@ -109,6 +129,10 @@ public sealed class MouseOutput
     private const uint MOUSEEVENTF_MOVE = 0x0001;
     private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
     private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT
