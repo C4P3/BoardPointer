@@ -1,0 +1,2 @@
+
+For anyone still wondering, on windows 10 go to control panel and under "Hardware and Sound" you can click "Add a device" this should allow you to skip the PIN step of connecting. On windows 11 however this control panel button will just open the bluetooth options, to get to the same panel on windows 11 you have to go to your bluetooth settings then click "Devices" then scroll all the way down to "More devices and printer settings" this will open the control panel and in the top left corner it should say "Add a device"

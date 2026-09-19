@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 32feet.NET. SYNC 中のボードを discover してHIDサービスを有効化するためだけに使う。
+         WiiFitToVRC の reference/ から lib/ にコピーしたもの (MS-PL)。 -->
+    <Reference Include="InTheHand.Net.Personal">
+      <HintPath>..\..\lib\InTheHand.Net.Personal.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
