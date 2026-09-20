@@ -71,24 +71,74 @@ public readonly record struct AimFinding(AimFindingLevel Level, string Title, st
 /// </summary>
 public static class AimTestDiagnosis
 {
-    /// <summary>再入場がこれを超えたら行き過ぎている。0が理想なので、1回/試行でも多い。</summary>
-    private const double ReEntryProblem = 1.0;
-    private const double ReEntryNote = 0.5;
+    // 以下の閾値は、実機で測った10本 (座位・足先、200試行) の分布から置いてある。
+    // 指摘は**うまくいっている設定では出ない**のが条件。常に1つ点いていると、それは背景に
+    // なって読まれなくなり、本当に効いている指摘まで一緒に無視される。
+    //
+    // 括弧内は実測のレンジ (10本それぞれの値の最小〜最大)。
 
-    /// <summary>曲線の端まで使えているとみなす割合。これ未満なら最大速度には届いていない。</summary>
-    private const double PeakRadiusReachedFraction = 0.9;
+    /// <summary>再入場の平均がこれを超えたら行き過ぎ [回/試行]。(実測 0.35〜0.85)</summary>
+    private const double ReEntryProblem = 1.5;
+    private const double ReEntryNote = 0.8;
 
-    /// <summary>経路効率がこれを下回ると、まっすぐ向かえていない。</summary>
-    private const double PathEfficiencyProblem = 0.6;
+    /// <summary>
+    /// 曲線の端まで使えているとみなす割合 (フルスケールに対して)。これ未満なら最大速度には
+    /// 届いていない。
+    ///
+    /// 実測の半径p95 は、正常な8本で 0.80〜1.16 とけっこう散る。0.9 (＝閾値 0.855) にすると
+    /// 0.80 の回に Problem が点いたが、その回は初到達1688ms・成功100%で、他と比べて悪くない。
+    /// 模擬の「倒しきれていない」設定は 0.64 だったので、境界はその間に置く。
+    /// </summary>
+    private const double PeakRadiusReachedFraction = 0.75;
 
-    /// <summary>震えが的の半径のこの割合を超えると、その大きさは限界に近い。</summary>
-    private const double DriftFractionOfRadius = 0.5;
+    /// <summary>
+    /// 出た半径の95%がこれを超えたら、可動域が狭く登録されすぎている。
+    ///
+    /// 実測のレンジは 0.80〜2.31。上の2本 (1.71 / 2.31) は可動域を 43mm で登録していたときの
+    /// もので、測り直したら 0.80〜1.16 に収まった。つまりこの指標は**実際に壊れている設定を
+    /// 拾っている**。境界はその間に置く。1.05 だと正常な6本にも点いた。
+    /// </summary>
+    private const double PeakRadiusOverRange = 1.30;
 
-    /// <summary>最悪方向が全体の中央値のこの倍数を超えたら、方向の偏りとみなす。</summary>
-    private const double DirectionBiasFactor = 1.4;
+    /// <summary>経路効率の中央値がこれを下回ると、まっすぐ向かえていない。(実測 0.77〜0.96)</summary>
+    private const double PathEfficiencyProblem = 0.65;
 
-    /// <summary>大きい的にこれ以上かかるなら、素の速さが足りない [ms]。</summary>
-    private const double SlowFirstTouchMs = 1500;
+    /// <summary>
+    /// 維持中の震えが的の半径のこの割合を超えると、その大きさは限界に近い。
+    ///
+    /// 実測では、震え / 半径が的の大きさに依らずほぼ一定だった (120px で 0.61、72px で 0.55、
+    /// 44px で 0.54)。的が小さいほど慎重に止めているということで、**0.55 前後が普通**。
+    /// 元の 0.5 は全10本・全サイズで点灯していた。
+    /// </summary>
+    private const double DriftFractionOfRadius = 0.85;
+
+    /// <summary>
+    /// 最悪方向が全体の中央値のこの倍数を超えたら、方向の偏りを疑う。
+    ///
+    /// 1方向あたり2〜3試行しかないので、ここは偶然がよく効く。実測10本で「最悪方向 / 全体中央」は
+    /// **1.14〜1.90倍まで振れ、しかも最悪方向は毎回別の向きだった** (前・右前・後・左・右後…)。
+    /// 1.4倍では偶然を拾って、毎回ちがう方向を名指しすることになる。
+    ///
+    /// そこで閾値を偶然の上限より上に置いたうえで、<see cref="AddDirectionFindings"/> では
+    /// 半径による裏取りも要求する。遅いだけなら偶然、遅くて**かつ**半径が張り付いている
+    /// (届かない) か低いまま (倒せない) なら、可動域の非対称という別の証拠がある。
+    /// </summary>
+    private const double DirectionBiasFactor = 2.0;
+
+    /// <summary>大きい的にこれ以上かかるなら、素の速さが足りない [ms]。(実測 1153〜1909)</summary>
+    private const double SlowFirstTouchMs = 2500;
+
+    /// <summary>整定の平均がこれを超えたら、詰めに時間がかかっている [ms]。(実測 277〜961)</summary>
+    private const double SettleMeanNoteMs = 1100;
+
+    /// <summary>
+    /// 重心の刻みがこれを超えたら「分解能が足りない」側を疑う [mm/count]。
+    ///
+    /// 実測は 0.19〜0.36 で、一番粗い 0.356 は合計荷重が 5.87kg しか載っていなかったとき。
+    /// 分解能は合計荷重に反比例するので、この値は姿勢がそのまま出る。元の 0.5 は実機では
+    /// 一度も超えず、判定が常に「姿勢の揺れ」側へ倒れていた。
+    /// </summary>
+    private const double CoarseResolutionMm = 0.30;
 
     public static IReadOnlyList<AimFinding> Diagnose(AimTestScore score, in AimTestConditions c)
     {
@@ -112,7 +162,7 @@ public static class AimTestDiagnosis
                 AimFindingLevel.Good,
                 "目立った問題は出ませんでした。",
                 $"粗合わせ {AimTestScore.Format(score.MedianFirstTouchMs, "F0", "ms")}・"
-                + $"詰め {AimTestScore.Format(score.MedianSettleMs, "F0", "ms")}・"
+                + $"詰め {AimTestScore.Format(score.MeanSettleMs, "F0", "ms")}・"
                 + $"入り直し {score.MeanReEntries:F2}回/試行。次に触るなら、体感で気になるほうの"
                 + "つまみを少しだけ動かして、同じテストをもう一度。"));
         }
@@ -154,7 +204,7 @@ public static class AimTestDiagnosis
                 + $"（今より狭く出れば端に届くようになります）、指数 {c.Exponent:F2} を下げて"
                 + "中間の速度を上げてください。"));
         }
-        else if (peak >= 1.05)
+        else if (peak >= PeakRadiusOverRange)
         {
             findings.Add(new AimFinding(
                 AimFindingLevel.Note,
@@ -184,7 +234,7 @@ public static class AimTestDiagnosis
         {
             findings.Add(new AimFinding(
                 AimFindingLevel.Problem,
-                $"行き過ぎています (入り直し {score.MeanReEntries:F2}回/試行、はみ出し {score.MedianOvershootPx:F0}px)。",
+                $"行き過ぎています (入り直し {score.MeanReEntries:F2}回/試行、はみ出しは悪いほうの1割で {score.OvershootP90Px:F0}px)。",
                 $"的に入ってから止まりきれずに出ています。指数 {c.Exponent:F2} を上げると中心付近が"
                 + "緩くなって止めやすくなります（端の速さは変わりません）。それでも残るなら最大速度"
                 + $" {c.MaxSpeedPxPerSec:F0} px/s を下げてください。"
@@ -214,26 +264,32 @@ public static class AimTestDiagnosis
 
     private static void AddSettlingFindings(List<AimFinding> findings, AimTestScore score, in AimTestConditions c)
     {
-        if (score.MedianSettleMs < 0 || score.MedianFirstTouchMs < 0)
+        if (score.MeanSettleMs < 0 || score.MedianFirstTouchMs < 0)
         {
             return;
         }
 
-        // 詰めのほうが粗合わせより長くかかっているなら、支配しているのは止め際。
-        if (score.MedianSettleMs > score.MedianFirstTouchMs && score.MedianSettleMs > 300)
+        // 判定に中央値を使わない。実測では一発で止まれた試行が 62.5% あり、整定の中央値は
+        // 10本中9本で 0 になった。設定を変えても動かない指標では、何も判定できない。
+        bool dominant = score.MeanSettleMs > score.MedianFirstTouchMs;
+        if (!dominant && score.MeanSettleMs < SettleMeanNoteMs)
         {
-            string cause = score.MeanReEntries >= ReEntryNote
-                ? $"入り直しが {score.MeanReEntries:F2}回/試行あるので、原因は行き過ぎです。指数を上げてください。"
-                : $"入り直しは {score.MeanReEntries:F2}回/試行と少ないので、行き過ぎではなく"
-                  + $"「的の中で止まりきれない」側です。デッドゾーン {c.Deadzone:F2} を上げるか、"
-                  + $"min-cutoff {c.MinCutoffHz:F2} Hz を下げて静止時を静かにしてください。";
-
-            findings.Add(new AimFinding(
-                AimFindingLevel.Problem,
-                $"詰めに時間がかかっています (粗合わせ {score.MedianFirstTouchMs:F0}ms に対して詰め {score.MedianSettleMs:F0}ms)。",
-                cause));
+            return;
         }
 
+        string cause = score.MeanReEntries >= ReEntryNote
+            ? $"入り直しが {score.MeanReEntries:F2}回/試行あるので、原因は行き過ぎです。"
+              + $"指数 {c.Exponent:F2} を上げてください。"
+            : $"入り直しは {score.MeanReEntries:F2}回/試行と少ないので、行き過ぎではなく"
+              + $"「的の中で止まりきれない」側です。デッドゾーン {c.Deadzone:F2} を上げるか、"
+              + $"min-cutoff {c.MinCutoffHz:F2} Hz を下げて静止時を静かにしてください。";
+
+        findings.Add(new AimFinding(
+            dominant ? AimFindingLevel.Problem : AimFindingLevel.Note,
+            $"詰めに時間がかかっています (粗合わせ {score.MedianFirstTouchMs:F0}ms に対して、"
+            + $"詰めが1試行あたり平均 {score.MeanSettleMs:F0}ms。"
+            + $"一発で止まれなかった試行が {score.CorrectionRate:P0})。",
+            cause));
     }
 
     /// <summary>
@@ -248,7 +304,9 @@ public static class AimTestDiagnosis
     /// </summary>
     private static void AddFailureFindings(List<AimFinding> findings, AimTestScore score, in AimTestConditions c)
     {
-        if (score.Timeouts == 0)
+        // 1試行の失敗は数えない。20試行のうち1回は、設定ではなく気の緩みでも起きる
+        // (実測10本のうち1本が、ちょうど 1/20 で点いた)。2回から意味を持たせる。
+        if (score.Timeouts < 2)
         {
             return;
         }
@@ -257,7 +315,7 @@ public static class AimTestDiagnosis
         int touchedButLost = score.Timeouts - missed;
         var level = score.SuccessRate < 0.8 ? AimFindingLevel.Problem : AimFindingLevel.Note;
 
-        if (missed > 0)
+        if (missed >= 2)
         {
             double closest = score.MedianClosestWhenMissedPx;
             double radius = score.MedianRadiusWhenMissedPx;
@@ -286,7 +344,7 @@ public static class AimTestDiagnosis
                 detail));
         }
 
-        if (touchedButLost > 0)
+        if (touchedButLost >= 2)
         {
             findings.Add(new AimFinding(
                 level,
@@ -321,7 +379,7 @@ public static class AimTestDiagnosis
             return;
         }
 
-        bool coarse = c.CopResolutionMm > 0.5;
+        bool coarse = c.CopResolutionMm > CoarseResolutionMm;
         findings.Add(new AimFinding(
             AimFindingLevel.Problem,
             $"一番小さい的 ({smallest.DiameterPx:F0}px) で震えが半径の {smallest.MedianDriftPx / radius:P0} あります。",
@@ -350,7 +408,14 @@ public static class AimTestDiagnosis
             return;
         }
 
+        // 遅いだけでは偶然と区別できない (1方向2〜3試行)。半径のほうにも証拠が要る ---
+        // 張り付いている (それ以上速くできない) か、低いまま (そちらへ倒せていない) か。
         bool saturated = worst.MedianPeakRadius >= 0.98;
+        bool cannotLean = worst.MedianPeakRadius <= 0.60;
+        if (!saturated && !cannotLean)
+        {
+            return;
+        }
         findings.Add(new AimFinding(
             AimFindingLevel.Note,
             $"「{worst.Label}」だけ遅いです ({worst.MedianFirstTouchMs:F0}ms、全体 {score.MedianFirstTouchMs:F0}ms)。",
@@ -368,7 +433,7 @@ public static class AimTestDiagnosis
         if (!c.UsesPressure)
         {
             // 詰めが支配していて荷重を使っていないなら、提案する価値がある。
-            if (score.MedianSettleMs > 500)
+            if (score.MeanSettleMs > SettleMeanNoteMs)
             {
                 findings.Add(new AimFinding(
                     AimFindingLevel.Note,
@@ -400,7 +465,7 @@ public static class AimTestDiagnosis
                 + $"閾値（作動 {c.PressureEngageRatio:F2} / 振り切り {c.PressureFullRatio:F2}）が"
                 + "自分の出せる範囲の外にあります。[荷重の範囲を測る (8秒)] で置き直してください。"));
         }
-        else if (Math.Abs(factor - full) < 0.05 && score.MedianSettleMs > 500)
+        else if (Math.Abs(factor - full) < 0.05 && score.MeanSettleMs > SettleMeanNoteMs)
         {
             findings.Add(new AimFinding(
                 AimFindingLevel.Note,
@@ -422,10 +487,12 @@ public static class AimTestDiagnosis
             sb.AppendLine($"  失敗 {score.Timeouts} (うち的に入れず {score.NeverTouched})");
         }
         sb.AppendLine($"粗合わせ (初到達)   中央値 {F(score.MedianFirstTouchMs, "F0", " ms")}");
-        sb.AppendLine($"詰め (整定)         中央値 {F(score.MedianSettleMs, "F0", " ms")}");
+        sb.AppendLine($"詰め (整定)         平均   {F(score.MeanSettleMs, "F0", " ms")}");
+        sb.AppendLine($"  一発で止まれず    {score.CorrectionRate:P0} の試行 "
+                    + $"(要ったとき {F(score.SettleP75Ms, "F0", " ms")} 前後)");
         sb.AppendLine($"維持完了まで        中央値 {F(score.MedianCompletionMs, "F0", " ms")}");
         sb.AppendLine($"入り直し            {score.MeanReEntries:F2} 回/試行");
-        sb.AppendLine($"はみ出し            中央値 {F(score.MedianOvershootPx, "F0", " px")}");
+        sb.AppendLine($"はみ出し            悪い1割 {F(score.OvershootP90Px, "F0", " px")}");
         sb.AppendLine($"経路効率            {F(score.MedianPathEfficiency * 100, "F0", " %")}");
         sb.AppendLine($"維持中の震え        {F(score.MedianDriftPx, "F1", " px (RMS)")}");
         sb.AppendLine($"使えた半径 (95%)    {F(score.PeakRadiusP95, "F2")}");

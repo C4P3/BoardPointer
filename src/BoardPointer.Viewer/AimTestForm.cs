@@ -222,7 +222,7 @@ public sealed class AimTestForm : Form
         _resultTitle.Text = score.Trials == 0
             ? "測定できませんでした"
             : $"エイムテストの結果 — 粗合わせ {AimTestScore.Format(score.MedianFirstTouchMs, "F0", "ms")}"
-              + $" / 詰め {AimTestScore.Format(score.MedianSettleMs, "F0", "ms")}";
+              + $" / 詰め {AimTestScore.Format(score.MeanSettleMs, "F0", "ms")}";
         _resultNumbers.Text = BuildNumbers(score);
 
         _findings.Controls.Clear();
@@ -258,7 +258,9 @@ public sealed class AimTestForm : Form
         }
         _settings.LastAimTestAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
         _settings.LastAimFirstTouchMs = score.MedianFirstTouchMs;
-        _settings.LastAimSettleMs = score.MedianSettleMs;
+        // 整定は平均で持つ。中央値は実測10本のうち9本で 0 になり、比較しても常に 0 → 0 で、
+        // つまみを動かした効果がまるごと見えなくなる。
+        _settings.LastAimSettleMs = score.MeanSettleMs;
         _settings.LastAimCompletionMs = score.MedianCompletionMs;
         _settings.LastAimReEntries = score.MeanReEntries;
         _settings.LastAimThroughput = score.ThroughputBitsPerSec;
@@ -272,7 +274,7 @@ public sealed class AimTestForm : Form
         {
             sb.AppendLine($"前回 ({_settings.LastAimTestAt}) との比較");
             sb.AppendLine(Compare("粗合わせ", _settings.LastAimFirstTouchMs, score.MedianFirstTouchMs, "ms", lowerIsBetter: true));
-            sb.AppendLine(Compare("詰め    ", _settings.LastAimSettleMs, score.MedianSettleMs, "ms", lowerIsBetter: true));
+            sb.AppendLine(Compare("詰め    ", _settings.LastAimSettleMs, score.MeanSettleMs, "ms", lowerIsBetter: true));
             sb.AppendLine(Compare("入り直し", _settings.LastAimReEntries, score.MeanReEntries, "回", lowerIsBetter: true, decimals: 2));
             sb.AppendLine();
             sb.AppendLine("※ 設定を変えていなくても、慣れと疲れで動きます。");
@@ -284,22 +286,22 @@ public sealed class AimTestForm : Form
 
         static string F(double v, string fmt) => AimTestScore.Format(v, fmt);
 
-        sb.AppendLine("大きさ別 (入れず = 的に一度も入れなかった試行)");
+        sb.AppendLine("大きさ別 (入れず = 的に一度も入れなかった試行、詰めは平均)");
         sb.AppendLine("  的     試行 成功 入れず  初到達   詰め 入直り   震え");
         foreach (var s in score.BySize)
         {
             sb.AppendLine($"  {s.DiameterPx,3:F0}px   {s.Trials,3} {s.SuccessRate,4:P0} {s.NeverTouched,5}  "
-                        + $"{F(s.MedianFirstTouchMs, "F0"),5}ms {F(s.MedianSettleMs, "F0"),4}ms "
+                        + $"{F(s.MedianFirstTouchMs, "F0"),5}ms {F(s.MeanSettleMs, "F0"),4}ms "
                         + $"{s.MeanReEntries,5:F2} {F(s.MedianDriftPx, "F1"),5}px");
         }
 
         sb.AppendLine();
-        sb.AppendLine("方向別 (遅い順)");
+        sb.AppendLine("方向別 (遅い順、詰めは平均)。1方向2〜3試行なので目安です。");
         sb.AppendLine("  向き   試行 成功 入れず  初到達   詰め  半径");
         foreach (var d in score.ByDirection)
         {
             sb.AppendLine($"  {d.Label,-4}   {d.Trials,3} {d.SuccessRate,4:P0} {d.NeverTouched,5}  "
-                        + $"{F(d.MedianFirstTouchMs, "F0"),5}ms {F(d.MedianSettleMs, "F0"),4}ms "
+                        + $"{F(d.MedianFirstTouchMs, "F0"),5}ms {F(d.MeanSettleMs, "F0"),4}ms "
                         + $"{F(d.MedianPeakRadius, "F2"),5}");
         }
 

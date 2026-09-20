@@ -51,5 +51,110 @@ public static class AimTestLog
         return path;
     }
 
+    /// <summary>
+    /// 書き出したものを読み戻す。
+    ///
+    /// 書けるだけで読めないと、記録は「あとで見るかもしれない何か」で終わる。読み戻せると、
+    /// **過去に実機で測ったぶん全部に対して、直した診断を当て直せる**。指摘の閾値は感覚では
+    /// 置けない (0.5回/試行が多いのか少ないのかは、自分の普通を知らないと決まらない) ので、
+    /// この経路が無いと閾値だけが一生仮のままになる。
+    /// </summary>
+    public static (IReadOnlyList<AimTrialResult> Trials, AimTestConditions Conditions) Read(string path)
+    {
+        var meta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var trials = new List<AimTrialResult>();
+        string[]? header = null;
+
+        foreach (string line in File.ReadLines(path))
+        {
+            if (line.StartsWith('#'))
+            {
+                int eq = line.IndexOf('=');
+                if (eq < 0)
+                {
+                    continue;
+                }
+                string key = line[1..eq].Trim();
+                string value = line[(eq + 1)..].Trim();
+                meta[key] = value;
+
+                // curve=deadzone:0.180,exponent:2.000 のような入れ子は平らに展開しておく。
+                foreach (string part in value.Split(','))
+                {
+                    int colon = part.IndexOf(':');
+                    if (colon > 0)
+                    {
+                        meta[$"{key}.{part[..colon].Trim()}"] = part[(colon + 1)..].Trim();
+                    }
+                }
+                continue;
+            }
+
+            if (header is null)
+            {
+                header = line.Split(',');
+                continue;
+            }
+
+            string[] f = line.Split(',');
+            double Field(string name, double fallback = -1)
+            {
+                int i = Array.IndexOf(header, name);
+                return i >= 0 && i < f.Length
+                       && double.TryParse(f[i], NumberStyles.Any, CultureInfo.InvariantCulture, out double v)
+                    ? v : fallback;
+            }
+
+            trials.Add(new AimTrialResult(
+                Index: (int)Field("index", 0),
+                IsWarmup: Field("warmup", 0) != 0,
+                TimedOut: Field("timed_out", 0) != 0,
+                DistancePx: Field("distance_px"),
+                TargetDiameterPx: Field("target_dia_px"),
+                DirectionDegrees: Field("direction_deg"),
+                IndexOfDifficulty: Field("id_bits"),
+                FirstTouchMs: Field("first_touch_ms"),
+                SettleMs: Field("settle_ms"),
+                CompletionMs: Field("completion_ms"),
+                ReEntries: (int)Field("re_entries", 0),
+                MaxOvershootPx: Field("max_overshoot_px"),
+                PathEfficiency: Field("path_efficiency"),
+                DwellDriftPx: Field("dwell_drift_px"),
+                ClosestApproachPx: Field("closest_px"),
+                PeakRadius: Field("peak_radius"),
+                PeakSpeedPxPerSec: Field("peak_speed_px_s"),
+                MinPressureFactor: Field("min_pressure_factor", 1)));
+        }
+
+        double M(string key, double fallback = 0) =>
+            meta.TryGetValue(key, out string? v)
+            && double.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out double d)
+                ? d : fallback;
+        string S(string key, string fallback) => meta.TryGetValue(key, out string? v) ? v : fallback;
+
+        var conditions = new AimTestConditions(
+            PostureMode: S("posture", "Standing"),
+            Deadzone: M("curve.deadzone"),
+            FullScale: M("curve.fullscale", 0.95),
+            Exponent: M("curve.exponent", 1),
+            MaxSpeedPxPerSec: M("curve.maxspeed", 900),
+            MinCutoffHz: M("filter.mincutoff", 1),
+            Beta: M("filter.beta"),
+            ReachIsCalibrated: M("reach.calibrated") != 0,
+            ReachFrontMm: M("reach.front"),
+            ReachBackMm: M("reach.back"),
+            ReachLeftMm: M("reach.left"),
+            ReachRightMm: M("reach.right"),
+            PressureMode: S("pressure.mode", "Off"),
+            PressureEngageRatio: M("pressure.engage", 1),
+            PressureFullRatio: M("pressure.full", 1),
+            LoadFactorAtEngage: M("pressure.at_engage", 1),
+            LoadFactorAtFull: M("pressure.at_full", 1),
+            CopResolutionMm: M("signal.cop_res_mm"),
+            TotalKg: M("signal.total_kg"));
+
+        return (trials, conditions);
+    }
+
     private static string Invariant(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 }

@@ -9,7 +9,7 @@ public readonly record struct AimSizeScore(
     double SuccessRate,
     int NeverTouched,
     double MedianFirstTouchMs,
-    double MedianSettleMs,
+    double MeanSettleMs,
     double MeanReEntries,
     double MedianDriftPx);
 
@@ -20,7 +20,7 @@ public readonly record struct AimDirectionScore(
     double SuccessRate,
     int NeverTouched,
     double MedianFirstTouchMs,
-    double MedianSettleMs,
+    double MeanSettleMs,
     double MedianPeakRadius);
 
 /// <summary>
@@ -62,14 +62,41 @@ public sealed class AimTestScore
     /// <summary>「大まかに素早く合わせる」ほうの代表値 [ms]。</summary>
     public double MedianFirstTouchMs { get; }
 
-    /// <summary>「そこから細かく詰める」ほうの代表値 [ms]。一発で止まれていれば0に近い。</summary>
+    /// <summary>整定時間の中央値 [ms]。表に出すためのもので、代表値としては使わない (下を見よ)。</summary>
     public double MedianSettleMs { get; }
+
+    /// <summary>
+    /// 「そこから細かく詰める」ほうの代表値 [ms]。**中央値ではなく平均**。
+    ///
+    /// 実測200試行で、修正が要った試行は 37.5% しかなかった。残りは的に入ってそのまま1秒
+    /// 保てているので整定が 0 で、中央値を取ると 10本中9本で 0 になる --- 代表値として退化していて、
+    /// 設定を変えても動かない。
+    ///
+    /// ここで知りたいのは「1試行あたり、修正にどれだけ余計にかかっているか」で、それは
+    /// 定義そのものが平均。分布の裾に引きずられるという中央値の理由 (初到達のほう) は、
+    /// ゼロ過剰な分布には当てはまらない。
+    /// </summary>
+    public double MeanSettleMs { get; }
+
+    /// <summary>整定時間の75パーセンタイル [ms]。修正が要ったときに、どれくらいかかるか。</summary>
+    public double SettleP75Ms { get; }
+
+    /// <summary>整定が0でなかった試行の割合。＝「一発で止まれなかった」割合。</summary>
+    public double CorrectionRate { get; }
 
     /// <summary>維持完了までの代表値 [ms]。維持そのものの1秒を含む。</summary>
     public double MedianCompletionMs { get; }
 
     public double MeanReEntries { get; }
+
+    /// <summary>はみ出しの中央値 [px]。実測では 0 になる (半分以上の試行は的から出ない)。</summary>
     public double MedianOvershootPx { get; }
+
+    /// <summary>
+    /// はみ出しの90パーセンタイル [px]。中央値が 0 に退化するので、指摘の根拠にはこちらを出す。
+    /// 実測のレンジは 23〜83px。
+    /// </summary>
+    public double OvershootP90Px { get; }
     public double MedianPathEfficiency { get; }
     public double MedianDriftPx { get; }
 
@@ -111,6 +138,12 @@ public sealed class AimTestScore
         MedianCompletionMs = Median(done.Select(r => r.CompletionMs));
         MeanReEntries = Scored.Count == 0 ? 0 : Scored.Average(r => (double)r.ReEntries);
         MedianOvershootPx = Median(Scored.Select(r => r.MaxOvershootPx));
+        OvershootP90Px = Percentile(Scored.Select(r => r.MaxOvershootPx), 0.90);
+
+        var settles = done.Select(r => r.SettleMs).Where(v => v >= 0).ToArray();
+        MeanSettleMs = settles.Length == 0 ? -1 : settles.Average();
+        SettleP75Ms = Percentile(settles, 0.75);
+        CorrectionRate = settles.Length == 0 ? 0 : (double)settles.Count(v => v > 0) / settles.Length;
         MedianPathEfficiency = Median(done.Select(r => r.PathEfficiency));
         MedianDriftPx = Median(done.Select(r => r.DwellDriftPx));
         PeakRadiusP95 = Percentile(Scored.Select(r => r.PeakRadius), 0.95);
@@ -132,7 +165,7 @@ public sealed class AimTestScore
                     SuccessRate: (double)ok.Length / g.Count(),
                     NeverTouched: g.Count(r => r.NeverTouched),
                     MedianFirstTouchMs: Median(ok.Select(r => r.FirstTouchMs)),
-                    MedianSettleMs: Median(ok.Select(r => r.SettleMs)),
+                    MeanSettleMs: Mean(ok.Select(r => r.SettleMs)),
                     MeanReEntries: g.Average(r => (double)r.ReEntries),
                     MedianDriftPx: Median(ok.Select(r => r.DwellDriftPx)));
             })
@@ -149,7 +182,7 @@ public sealed class AimTestScore
                     SuccessRate: (double)ok.Length / g.Count(),
                     NeverTouched: g.Count(r => r.NeverTouched),
                     MedianFirstTouchMs: Median(ok.Select(r => r.FirstTouchMs)),
-                    MedianSettleMs: Median(ok.Select(r => r.SettleMs)),
+                    MeanSettleMs: Mean(ok.Select(r => r.SettleMs)),
                     MedianPeakRadius: Median(g.Select(r => r.PeakRadius)));
             })
             .OrderByDescending(d => d.MedianFirstTouchMs)
@@ -174,6 +207,13 @@ public sealed class AimTestScore
     /// </summary>
     public static string Format(double value, string format, string unit = "")
         => value < 0 ? "—" : value.ToString(format) + unit;
+
+    /// <summary>未到達 (-1) を除いた平均。整定のように 0 が多い量は、中央値より平均が代表になる。</summary>
+    internal static double Mean(IEnumerable<double> values)
+    {
+        var kept = values.Where(v => v >= 0).ToArray();
+        return kept.Length == 0 ? -1 : kept.Average();
+    }
 
     internal static double Percentile(IEnumerable<double> values, double percentile)
     {

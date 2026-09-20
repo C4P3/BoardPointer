@@ -6,6 +6,7 @@ using BoardPointer.Core.Mapping;
 using BoardPointer.Core.Pipeline;
 using BoardPointer.Core.Recording;
 using BoardPointer.Core.Sampling;
+using BoardPointer.Core.Training;
 
 namespace BoardPointer.Replay;
 
@@ -38,6 +39,10 @@ internal static class Program
             {
                 return RunImportCalibration(args);
             }
+            if (args[0] == "--aimtest")
+            {
+                return RunAimTestReport(args);
+            }
             if (args[0] == "--bluetooth-selftest")
             {
                 return RunBluetoothSelfTest();
@@ -57,6 +62,7 @@ internal static class Program
             使い方:
               BoardPointer.Replay <生CSV> [オプション]      記録を流し直して統計を出す
               BoardPointer.Replay --synth <出力CSV> [...]   実機無しで試すための合成データを作る
+              BoardPointer.Replay --aimtest <CSV|フォルダ> エイムテストの記録を読み戻して診断を出し直す
               BoardPointer.Replay --mouse-selftest         カーソルが指示どおり動くかを1回試す (両モード)
               BoardPointer.Replay --import-calib <生CSV>   記録に入っている工場較正を保存して使い回す
               BoardPointer.Replay --bluetooth-selftest     Bluetooth ライブラリが読めるかを確認する
@@ -90,7 +96,130 @@ internal static class Program
               BoardPointer.Replay --synth debug/synth.csv
               BoardPointer.Replay debug/synth.csv --beta 0.0005 --out debug/derived.csv
               BoardPointer.Replay debug/session_*.csv --seated --no-tare --center-seconds 2
+              BoardPointer.Replay --aimtest debug            過去のエイムテストをまとめて見直す
             """);
+    }
+
+    /// <summary>
+    /// 過去のエイムテストの記録を読み戻して、**今の**診断を当て直す。
+    ///
+    /// 指摘の閾値は感覚では置けない。「入り直し 0.5回/試行」が多いのか少ないのかは、自分の普通を
+    /// 知らないと決まらないし、その普通は姿勢と体で変わる。閾値をいじるたびに実機で2分×10本
+    /// 測り直すわけにいかないので、測ったぶんに当て直せる経路を用意しておく。
+    ///
+    /// まとめて見ると、指摘が「常に1つ点いている」状態にも気づける。そうなった指摘は背景に
+    /// なって読まれなくなり、本当に効いている指摘まで一緒に無視される。
+    /// </summary>
+    private static int RunAimTestReport(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("--aimtest には aimtest_*.csv か、それが入っているフォルダのパスが要ります。");
+            return 1;
+        }
+
+        string target = args[1];
+        string[] files = Directory.Exists(target)
+            ? Directory.GetFiles(target, "aimtest_*.csv").OrderBy(f => f, StringComparer.Ordinal).ToArray()
+            : [target];
+
+        if (files.Length == 0)
+        {
+            Console.Error.WriteLine($"{target} に aimtest_*.csv が見つかりません。");
+            return 1;
+        }
+
+        bool verbose = files.Length == 1;
+        int clean = 0;
+
+        foreach (string file in files)
+        {
+            var (trials, conditions) = AimTestLog.Read(file);
+            var score = new AimTestScore(trials);
+            var findings = AimTestDiagnosis.Diagnose(score, conditions);
+
+            Console.WriteLine();
+            Console.WriteLine($"=== {Path.GetFileName(file)} ===");
+            Console.WriteLine($"  設定 : {conditions.PostureMode} / デッドゾーン {conditions.Deadzone:F2}"
+                            + $" / 指数 {conditions.Exponent:F2} / 最大速度 {conditions.MaxSpeedPxPerSec:F0} px/s"
+                            + $" / min-cutoff {conditions.MinCutoffHz:F2} Hz");
+            Console.WriteLine($"         可動域 前{conditions.ReachFrontMm:F0} 後{conditions.ReachBackMm:F0}"
+                            + $" 左{conditions.ReachLeftMm:F0} 右{conditions.ReachRightMm:F0} mm"
+                            + $" / 荷重 {conditions.PressureMode}");
+
+            if (verbose)
+            {
+                Console.WriteLine();
+
+                // 行ごとに出すのに、文字リテラルの改行を書かない。StringReader なら改行コードの
+                // 違い (CRLF / LF) もまとめて面倒を見てくれる。
+                using (var reader = new StringReader(AimTestDiagnosis.Summarize(score)))
+                {
+                    while (reader.ReadLine() is { } line)
+                    {
+                        if (line.Trim().Length > 0)
+                        {
+                            Console.WriteLine($"  {line.TrimEnd()}");
+                        }
+                    }
+                }
+                Console.WriteLine();
+                Console.WriteLine("  大きさ別");
+                foreach (var b in score.BySize)
+                {
+                    Console.WriteLine($"    {b.DiameterPx,3:F0}px  試行{b.Trials,3}  成功{b.SuccessRate,5:P0}"
+                                    + $"  初到達{AimTestScore.Format(b.MedianFirstTouchMs, "F0"),6}ms"
+                                    + $"  詰め{AimTestScore.Format(b.MeanSettleMs, "F0"),5}ms"
+                                    + $"  入直り{b.MeanReEntries,5:F2}"
+                                    + $"  震え{AimTestScore.Format(b.MedianDriftPx, "F1"),5}px");
+                }
+                Console.WriteLine();
+                Console.WriteLine("  方向別 (遅い順、1方向2〜3試行なので目安)");
+                foreach (var d in score.ByDirection)
+                {
+                    Console.WriteLine($"    {d.Label,-4}  試行{d.Trials,3}  成功{d.SuccessRate,5:P0}"
+                                    + $"  初到達{AimTestScore.Format(d.MedianFirstTouchMs, "F0"),6}ms"
+                                    + $"  詰め{AimTestScore.Format(d.MeanSettleMs, "F0"),5}ms"
+                                    + $"  半径{d.MedianPeakRadius,5:F2}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"  成績 : 初到達 {AimTestScore.Format(score.MedianFirstTouchMs, "F0", "ms")}"
+                                + $" / 詰め平均 {AimTestScore.Format(score.MeanSettleMs, "F0", "ms")}"
+                                + $" / 入り直し {score.MeanReEntries:F2}"
+                                + $" / 半径p95 {score.PeakRadiusP95:F2}"
+                                + $" / 成功 {score.SuccessRate:P0}");
+            }
+
+            Console.WriteLine();
+            if (findings.All(f => f.Level == AimFindingLevel.Good))
+            {
+                clean++;
+            }
+            foreach (var f in findings)
+            {
+                string mark = f.Level switch
+                {
+                    AimFindingLevel.Problem => "[!]",
+                    AimFindingLevel.Note => "[-]",
+                    _ => "[o]",
+                };
+                Console.WriteLine($"  {mark} {f.Title}");
+                if (verbose)
+                {
+                    Console.WriteLine($"      {f.Detail}");
+                }
+            }
+        }
+
+        if (files.Length > 1)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"{files.Length} 本のうち {clean} 本が無指摘。"
+                            + "うまくいっている設定で毎回点いている指摘があれば、その閾値は自分の普通より低すぎます。");
+        }
+        return 0;
     }
 
     private static int RunMouseSelfTest()
