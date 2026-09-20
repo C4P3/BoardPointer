@@ -166,6 +166,7 @@ public sealed class SettingsPanel : UserControl
         settings.LeftClick = _boxes[HotkeyAction.LeftClick].Binding;
         settings.RightClick = _boxes[HotkeyAction.RightClick].Binding;
         settings.RecenterOrigin = _boxes[HotkeyAction.RecenterOrigin].Binding;
+        settings.TogglePointerMode = _boxes[HotkeyAction.TogglePointerMode].Binding;
         settings.MinimizeToTray = _minimizeToTray.Checked;
         settings.StartMinimized = _startMinimized.Checked;
     }

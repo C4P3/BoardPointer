@@ -18,6 +18,7 @@ public sealed class TrayController : IDisposable
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _connectItem = new("接続");
     private readonly ToolStripMenuItem _outputItem = new("マウス出力");
+    private readonly ToolStripMenuItem _pointerModeItem = new("送り先");
     private readonly ToolStripMenuItem _tareItem = new("荷重ゼロ点 (降りて3秒)");
     private readonly ToolStripMenuItem _centerItem = new("重心の原点 (3秒)");
     private readonly ToolStripMenuItem _recenterItem = new("重心の原点を今に合わせる");
@@ -30,6 +31,7 @@ public sealed class TrayController : IDisposable
 
     public event Action? ConnectRequested;
     public event Action? OutputToggleRequested;
+    public event Action? PointerModeToggleRequested;
     public event Action? TareRequested;
     public event Action? CenterRequested;
     public event Action? RecenterRequested;
@@ -46,6 +48,7 @@ public sealed class TrayController : IDisposable
         [
             _connectItem,
             _outputItem,
+            _pointerModeItem,
             new ToolStripSeparator(),
             _tareItem,
             _centerItem,
@@ -57,6 +60,7 @@ public sealed class TrayController : IDisposable
 
         _connectItem.Click += (_, _) => ConnectRequested?.Invoke();
         _outputItem.Click += (_, _) => OutputToggleRequested?.Invoke();
+        _pointerModeItem.Click += (_, _) => PointerModeToggleRequested?.Invoke();
         _tareItem.Click += (_, _) => TareRequested?.Invoke();
         _centerItem.Click += (_, _) => CenterRequested?.Invoke();
         _recenterItem.Click += (_, _) => RecenterRequested?.Invoke();
@@ -77,7 +81,10 @@ public sealed class TrayController : IDisposable
     /// <param name="outputEnabled">マウス出力中か。</param>
     /// <param name="status">ツールチップに出す1行。</param>
     /// <param name="outputHotkey">出力の入り切りに割り当てられているキーの表記。</param>
-    public void SetState(bool connected, bool outputEnabled, string status, string outputHotkey)
+    /// <param name="pointerMode">今の送り先の名前。</param>
+    /// <param name="pointerModeHotkey">送り先の切替に割り当てられているキーの表記。</param>
+    public void SetState(bool connected, bool outputEnabled, string status, string outputHotkey,
+        string pointerMode, string pointerModeHotkey)
     {
         _notifyIcon.Icon = outputEnabled ? _outputIcon : connected ? _connectedIcon : _idleIcon;
 
@@ -89,6 +96,8 @@ public sealed class TrayController : IDisposable
         _outputItem.Text = (outputEnabled ? "マウス出力を止める" : "マウス出力を始める")
                          + (string.IsNullOrEmpty(outputHotkey) ? string.Empty : $" ({outputHotkey})");
         _outputItem.Checked = outputEnabled;
+        _pointerModeItem.Text = $"送り先: {pointerMode}"
+                              + (string.IsNullOrEmpty(pointerModeHotkey) ? string.Empty : $" ({pointerModeHotkey})");
         _tareItem.Enabled = connected;
         _centerItem.Enabled = connected;
         _recenterItem.Enabled = connected;

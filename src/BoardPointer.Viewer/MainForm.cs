@@ -75,6 +75,9 @@ public sealed class MainForm : Form
     private HotkeyManager? _hotkeys;
     private TrayController? _tray;
 
+    // 起動時の復元中は、つまみが動いても「操作された」とは扱わない。
+    private bool _uiReady;
+
     // トレイの [終了] から閉じたときだけ本当に終わる。窓の × はトレイへの格納として扱う。
     private bool _exiting;
     private bool _startHidden;
@@ -142,6 +145,8 @@ public sealed class MainForm : Form
 
         ApplySettings();
         _startHidden |= _settings.StartMinimized;
+
+        _uiReady = true;
 
         _uiTimer.Tick += OnUiTick;
         _uiTimer.Start();
@@ -236,8 +241,9 @@ public sealed class MainForm : Form
     /// </summary>
     private Control BuildBottomTabs()
     {
-        _mappingPanel = new MappingPanel(_mapper) { Dock = DockStyle.Fill };
+        _mappingPanel = new MappingPanel(_mapper, _mouseOutput) { Dock = DockStyle.Fill };
         _mappingPanel.OutputToggleRequested += ToggleMouseOutput;
+        _mappingPanel.PointerModeChanged += OnPointerModeChanged;
         _mappingPanel.CalibrationRequested += BeginReachCalibration;
         _mappingPanel.LoadRangeRequested += BeginLoadRangeCalibration;
 
@@ -255,7 +261,7 @@ public sealed class MainForm : Form
         var settingsTab = new TabPage("設定") { BackColor = Color.FromArgb(27, 29, 34) };
         settingsTab.Controls.Add(_settingsPanel);
 
-        var tabs = new TabControl { Dock = DockStyle.Bottom, Height = 270 };
+        var tabs = new TabControl { Dock = DockStyle.Bottom, Height = 300 };
         tabs.TabPages.Add(mouseTab);
         tabs.TabPages.Add(signalTab);
         tabs.TabPages.Add(settingsTab);
@@ -654,6 +660,42 @@ public sealed class MainForm : Form
             : "マウス出力を停止しました。";
     }
 
+    /// <summary>
+    /// カーソルの送り方を切り替える。
+    ///
+    /// 押したい場面が「ゲームに入ってカーソルが効かないと気づいたとき」なので、窓に戻らずに
+    /// 切り替えられる必要がある。全画面のゲームからこの窓を出すのは、マウス出力を止めるのと
+    /// 同じくらい面倒。実体はコンボへの書き込みで、MouseOutput への反映は MappingPanel に任せる
+    /// --- 2か所から別々に書くと、UI と実際の送り方がずれる。
+    /// </summary>
+    private void TogglePointerMode()
+    {
+        _mappingPanel.SetPointerMode(
+            _mouseOutput.Mode == PointerMode.Relative ? PointerMode.Absolute : PointerMode.Relative);
+    }
+
+    private void OnPointerModeChanged()
+    {
+        // 端数の持ち越しは MouseOutput 側で捨てているが、こちらでも止めない理由が無い。
+        // 切り替えた直後に前のモードの勢いが残ると、原因の分かりにくい1回の飛びになる。
+        _mouseOutput.Reset();
+
+        // 起動時の復元でもコンボが動くので、そのぶんは黙って通す。「送り先を変えました」と
+        // 報告すると、何もしていないのに変えたことになるうえ、「未接続」を消してしまう。
+        if (!_uiReady)
+        {
+            return;
+        }
+
+        _status.Text = _mouseOutput.Mode == PointerMode.Relative
+            ? $"送り先を「ゲーム (視点)」にしました。移動量だけを送ります ({_settings.TogglePointerMode} で戻せます)。"
+            : $"送り先を「デスクトップ」にしました。絶対座標で送り、ポインタ加速を迂回します ({_settings.TogglePointerMode} で切替)。";
+
+        // 保存する前に UI から集め直す。_settings はまだ切り替え前の値を持っていて、
+        // そのまま書くと「切り替えたのに次回は元のモードで立ち上がる」になる。
+        SaveSettings();
+    }
+
     private void BeginReachCalibration()
     {
         if (_source is null)
@@ -803,7 +845,8 @@ public sealed class MainForm : Form
     
         }
 
-        _tray?.SetState(_source is not null, _mouseEnabled, _status.Text, _settings.ToggleOutput.ToString());
+        _tray?.SetState(_source is not null, _mouseEnabled, _status.Text, _settings.ToggleOutput.ToString(),
+            MappingPanel.PointerModeLabel(_mouseOutput.Mode), _settings.TogglePointerMode.ToString());
 
         // 常駐中は窓が見えていない。隠れている面の再描画と文字列生成は素通りさせる。
         if (!Visible)
@@ -901,6 +944,7 @@ public sealed class MainForm : Form
         _tray = new TrayController();
         _tray.ConnectRequested += () => { if (_source is null) { ConnectLive(); } else { StopSource("停止しました"); } };
         _tray.OutputToggleRequested += ToggleMouseOutput;
+        _tray.PointerModeToggleRequested += TogglePointerMode;
         _tray.TareRequested += BeginTare;
         _tray.CenterRequested += BeginCentering;
         _tray.RecenterRequested += RecenterOriginNow;
@@ -998,6 +1042,10 @@ public sealed class MainForm : Form
 
             case HotkeyAction.RecenterOrigin:
                 RecenterOriginNow();
+                break;
+
+            case HotkeyAction.TogglePointerMode:
+                TogglePointerMode();
                 break;
         }
     }

@@ -36,6 +36,22 @@ public sealed class AppSettings
     public bool ShareLeftRight { get; set; } = true;
     public bool AutoCenter { get; set; }
 
+    /// <summary>
+    /// カーソルの送り方。"Absolute" (Windows のカーソル向け) または "Relative" (Raw Input 向け)。
+    ///
+    /// 相手によって決まるもので、好みではない。既定は絶対座標 --- 普通に使う相手はデスクトップで、
+    /// そちらはポインタ加速を迂回できる絶対座標のほうが素直。
+    /// </summary>
+    public string PointerMode { get; set; } = "Absolute";
+
+    /// <summary>
+    /// 相対モードだけにかかる速度の倍率。絶対座標モードでは使わない。
+    ///
+    /// 相対モードの移動量はゲーム側が好きに解釈するので、絶対座標で詰めた最大速度が
+    /// そのまま通用しない。モードごとに独立した倍率を持たせてある。
+    /// </summary>
+    public double RelativeGain { get; set; } = 1.0;
+
     /// <summary>"Off" / "Clutch" / "Throttle"。</summary>
     public string PressureMode { get; set; } = "Off";
     public double PressureEngageRatio { get; set; } = 0.97;
@@ -76,6 +92,7 @@ public sealed class AppSettings
     public HotkeyBinding LeftClick { get; set; } = new(0, 0x79);         // F10
     public HotkeyBinding RightClick { get; set; } = new(0, 0x7A);        // F11
     public HotkeyBinding RecenterOrigin { get; set; } = new(0, 0x7B);    // F12
+    public HotkeyBinding TogglePointerMode { get; set; } = new(0, 0x77);  // F8
 
     public HotkeyBinding For(HotkeyAction action) => action switch
     {
@@ -83,6 +100,7 @@ public sealed class AppSettings
         HotkeyAction.LeftClick => LeftClick,
         HotkeyAction.RightClick => RightClick,
         HotkeyAction.RecenterOrigin => RecenterOrigin,
+        HotkeyAction.TogglePointerMode => TogglePointerMode,
         _ => throw new ArgumentOutOfRangeException(nameof(action)),
     };
 
@@ -92,6 +110,7 @@ public sealed class AppSettings
         HotkeyAction.LeftClick => "左クリック",
         HotkeyAction.RightClick => "右クリック",
         HotkeyAction.RecenterOrigin => "重心の原点を今に合わせる",
+        HotkeyAction.TogglePointerMode => "送り方 (デスクトップ/ゲーム) の切替",
         _ => action.ToString(),
     };
 }

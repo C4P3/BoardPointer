@@ -57,7 +57,7 @@ internal static class Program
             使い方:
               BoardPointer.Replay <生CSV> [オプション]      記録を流し直して統計を出す
               BoardPointer.Replay --synth <出力CSV> [...]   実機無しで試すための合成データを作る
-              BoardPointer.Replay --mouse-selftest         カーソルが指示どおり動くかを1回試す
+              BoardPointer.Replay --mouse-selftest         カーソルが指示どおり動くかを1回試す (両モード)
               BoardPointer.Replay --import-calib <生CSV>   記録に入っている工場較正を保存して使い回す
               BoardPointer.Replay --bluetooth-selftest     Bluetooth ライブラリが読めるかを確認する
 
@@ -96,14 +96,32 @@ internal static class Program
     private static int RunMouseSelfTest()
     {
         Console.WriteLine("カーソルを少し動かして、元の位置に戻します。");
-        var (rdx, rdy, adx, ady) = MouseOutput.SelfTest();
-        Console.WriteLine($"  指示 : dx {rdx} / dy {rdy}");
-        Console.WriteLine($"  実測 : dx {adx} / dy {ady}");
+
+        // 絶対座標: 変換 (仮想デスクトップの原点とサイズ、65535 への正規化) の検算。
+        // ここがずれるのはこちらのバグなので、合否を出すのはこの側だけ。
+        var (rdx, rdy, adx, ady) = MouseOutput.SelfTest(PointerMode.Absolute);
+        Console.WriteLine("  -- 送り先: デスクトップ (絶対座標) --");
+        Console.WriteLine($"    指示 : dx {rdx} / dy {rdy}");
+        Console.WriteLine($"    実測 : dx {adx} / dy {ady}");
 
         bool ok = Math.Abs(adx - rdx) <= 1 && Math.Abs(ady - rdy) <= 1;
         Console.WriteLine(ok
-            ? "  OK。絶対座標への変換は合っています。"
-            : "  [!] ずれています。仮想デスクトップの原点/サイズの扱いを疑ってください。");
+            ? "    OK。絶対座標への変換は合っています。"
+            : "    [!] ずれています。仮想デスクトップの原点/サイズの扱いを疑ってください。");
+
+        // 相対: こちらは検算ではなく実測。指示と実測の差は Windows 側の倍率と加速なので、
+        // ずれていても「間違い」ではない。ゲームでの効き方を読むための数字として出す。
+        var (rrdx, rrdy, radx, rady) = MouseOutput.SelfTest(PointerMode.Relative);
+        var pointer = PointerSettings.Read();
+        Console.WriteLine();
+        Console.WriteLine("  -- 送り先: ゲーム (相対デルタ) --");
+        Console.WriteLine($"    指示 : dx {rrdx} / dy {rrdy}");
+        Console.WriteLine($"    実測 : dx {radx} / dy {rady}");
+        Console.WriteLine($"    Windows 側 : 速度スライダー {pointer.SpeedSlider}/20、"
+                        + $"ポインターの精度を高める {(pointer.EnhancePointerPrecision ? "入" : "切")}");
+        Console.WriteLine("    指示と実測の差は Windows の倍率と加速です。Raw Input を読むゲーム");
+        Console.WriteLine("    (相対モードで狙っている相手) には、この加速はかかりません。");
+
         return ok ? 0 : 1;
     }
 

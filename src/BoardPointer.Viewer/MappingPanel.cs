@@ -14,6 +14,7 @@ namespace BoardPointer.Viewer;
 public sealed class MappingPanel : UserControl
 {
     private readonly PointerMapper _mapper;
+    private readonly MouseOutput _output;
 
     private readonly Button _outputButton = new() { Text = "マウス出力 開始", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
     private readonly Button _calibrateButton = new() { Text = "可動域キャリブレーション (12秒)", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
@@ -24,6 +25,19 @@ public sealed class MappingPanel : UserControl
     private readonly Label _deadzoneLabel = MakeLabel();
     private readonly Label _exponentLabel = MakeLabel();
     private readonly Label _speedLabel = MakeLabel();
+
+    /// <summary>
+    /// カーソルの送り方。好みではなく**相手**で選ぶものなので、挙動 (絶対座標/相対) ではなく
+    /// 相手の名前で並べる。絶対座標・相対デルタと書いても、どちらを選べばいいかは分からない。
+    /// </summary>
+    private readonly ComboBox _pointerModeCombo = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 150,
+        Margin = new Padding(0, 2, 0, 4),
+    };
+    private readonly TrackBar _relativeGainBar = new() { Minimum = 10, Maximum = 400, Value = 100, TickStyle = TickStyle.None, AutoSize = false, Width = 150, Height = 30, Margin = new Padding(0, 0, 0, 6) };
+    private readonly Label _relativeGainLabel = new() { AutoSize = true, Width = 150, ForeColor = Color.FromArgb(180, 188, 200), Margin = new Padding(0, 2, 0, 0) };
 
     private readonly CheckBox _shareLeftRight = new() { Text = "左右を共通化", Checked = true, AutoSize = true };
     private readonly CheckBox _invertY = new() { Text = "前後を反転", AutoSize = true };
@@ -66,14 +80,18 @@ public sealed class MappingPanel : UserControl
     /// <summary>[荷重の範囲を測る] が押された。</summary>
     public event Action? LoadRangeRequested;
 
+    /// <summary>送り方が変わった。MainForm が状況表示とトレイを更新する。</summary>
+    public event Action? PointerModeChanged;
+
     public bool ShareLeftRight => _shareLeftRight.Checked;
 
     /// <summary>原点をゆっくり今の重心へ寄せるか。操作していない間だけ動く。</summary>
     public bool AutoCenter => _autoCenter.Checked;
 
-    public MappingPanel(PointerMapper mapper)
+    public MappingPanel(PointerMapper mapper, MouseOutput output)
     {
         _mapper = mapper;
+        _output = output;
         BackColor = Color.FromArgb(27, 29, 34);
         _curveView.SetCurve(mapper.Curve);
 
@@ -85,8 +103,15 @@ public sealed class MappingPanel : UserControl
             AutoScroll = true,
         };
 
+        // 送り先は出力ボタンのすぐ下に置く。どちらも「出した先」の話で、重心の曲線のつまみとは
+        // 別の階層にある。横に並べると1行目が伸びて、荷重のつまみが折り返しの下に落ちる。
+        _pointerModeCombo.Items.AddRange(["送り先: デスクトップ", "送り先: ゲーム (視点)"]);
+        _pointerModeCombo.SelectedIndex = 0;
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 4, 14, 0) };
-        buttons.Controls.AddRange([_outputButton, _calibrateButton, _shareLeftRight, _invertY, _autoCenter]);
+        buttons.Controls.AddRange([
+            _outputButton, _calibrateButton,
+            _pointerModeCombo, _relativeGainLabel, _relativeGainBar,
+            _shareLeftRight, _invertY, _autoCenter]);
         left.Controls.Add(buttons);
 
         left.Controls.Add(Stack(_deadzoneLabel, _deadzoneBar));
@@ -112,6 +137,8 @@ public sealed class MappingPanel : UserControl
 
         _outputButton.Click += (_, _) => OutputToggleRequested?.Invoke();
         _calibrateButton.Click += (_, _) => CalibrationRequested?.Invoke();
+        _pointerModeCombo.SelectedIndexChanged += (_, _) => { Apply(); PointerModeChanged?.Invoke(); };
+        _relativeGainBar.ValueChanged += (_, _) => Apply();
         _deadzoneBar.ValueChanged += (_, _) => Apply();
         _exponentBar.ValueChanged += (_, _) => Apply();
         _speedBar.ValueChanged += (_, _) => Apply();
@@ -166,6 +193,29 @@ public sealed class MappingPanel : UserControl
         return $"{action}と {a:P0} → {b:P0} ({direction})";
     }
 
+    /// <summary>
+    /// 送り方についての一言。相対モードのときだけ、Windows 側の設定が効いていることを知らせる。
+    ///
+    /// Raw Input を読むゲーム (相対モードで狙っている相手そのもの) には加速がかからないので、
+    /// これは「効かない」ではなく「効く相手と効かない相手がいる」という警告。倍率が思ったのと
+    /// 違うときに、こちらのつまみではなく Windows の設定を疑えるだけの情報を出しておく。
+    /// </summary>
+    private string PointerModeNote()
+    {
+        if (_output.Mode != PointerMode.Relative)
+        {
+            return string.Empty;
+        }
+
+        string speed = _pointerSettings.SpeedSlider == 10
+            ? string.Empty
+            : $"\n    速度スライダー {_pointerSettings.SpeedSlider}/20 が倍率に乗ります。";
+        string epp = _pointerSettings.EnhancePointerPrecision
+            ? "\n[!] 「ポインターの精度を高める」が入っています。\n    OSカーソル経由のゲームでは曲線が濁ります\n    (Raw Input のゲームには影響しません)。"
+            : string.Empty;
+        return epp + speed;
+    }
+
     private static Label MakeLabel() => new() { AutoSize = true, Width = 130, ForeColor = Color.FromArgb(180, 188, 200) };
 
     private static Control Stack(Control top, Control bottom)
@@ -176,8 +226,16 @@ public sealed class MappingPanel : UserControl
         return stack;
     }
 
+    /// <summary>
+    /// Windows 側のポインタ設定。相対モードのときだけ効いてくるので、モードを触ったときに
+    /// 読み直す。毎フレーム読む種類の値ではない (本人が設定を開いて変えたときにしか動かない)。
+    /// </summary>
+    private PointerSettings.Values _pointerSettings = PointerSettings.Read();
+
     private void Apply()
     {
+        _output.Mode = _pointerModeCombo.SelectedIndex == 1 ? PointerMode.Relative : PointerMode.Absolute;
+        _output.RelativeGain = _relativeGainBar.Value / 100.0;
         _mapper.Curve.Deadzone = _deadzoneBar.Value / 100.0;
         _mapper.Curve.Exponent = _exponentBar.Value / 100.0;
         _mapper.Curve.MaxSpeedPxPerSec = _speedBar.Value * 100.0;
@@ -194,6 +252,19 @@ public sealed class MappingPanel : UserControl
         _mapper.PressureFullRatio = Math.Abs(full - engage) < 0.02
             ? (full >= engage ? engage + 0.02 : engage - 0.02)
             : full;
+
+        bool relative = _output.Mode == PointerMode.Relative;
+        if (relative)
+        {
+            _pointerSettings = PointerSettings.Read();
+        }
+        _relativeGainLabel.Text = $"ゲームでの倍率 : {_output.RelativeGain:F2}x";
+
+        // 絶対座標モードでは倍率を使わない。灰色にして残すのではなく、畳む。
+        // このパネルは既に埋まっていて、常時見えている「効かないつまみ」1つぶんの高さが、
+        // 下の段 (荷重のつまみ) を折り返しの外へ押し出す。要るときにだけ場所を取ればいい。
+        _relativeGainLabel.Visible = relative;
+        _relativeGainBar.Visible = relative;
 
         _deadzoneLabel.Text = $"デッドゾーン : {_mapper.Curve.Deadzone:F2}";
         _exponentLabel.Text = $"指数 : {_mapper.Curve.Exponent:F2}";
@@ -234,6 +305,8 @@ public sealed class MappingPanel : UserControl
         _loadAtFullBar.Value = Clamp(_loadAtFullBar, (int)Math.Round(settings.LoadFactorAtFull * 100));
         _engageBar.Value = Clamp(_engageBar, (int)Math.Round(settings.PressureEngageRatio * 100));
         _fullBar.Value = Clamp(_fullBar, (int)Math.Round(settings.PressureFullRatio * 100));
+        _relativeGainBar.Value = Clamp(_relativeGainBar, (int)Math.Round(settings.RelativeGain * 100));
+        _pointerModeCombo.SelectedIndex = settings.PointerMode == "Relative" ? 1 : 0;
         _invertY.Checked = settings.InvertY;
         _shareLeftRight.Checked = settings.ShareLeftRight;
         _autoCenter.Checked = settings.AutoCenter;
@@ -261,6 +334,8 @@ public sealed class MappingPanel : UserControl
         settings.Deadzone = _mapper.Curve.Deadzone;
         settings.Exponent = _mapper.Curve.Exponent;
         settings.MaxSpeedPxPerSec = _mapper.Curve.MaxSpeedPxPerSec;
+        settings.PointerMode = _output.Mode.ToString();
+        settings.RelativeGain = _output.RelativeGain;
         settings.InvertY = _invertY.Checked;
         settings.ShareLeftRight = _shareLeftRight.Checked;
         settings.AutoCenter = _autoCenter.Checked;
@@ -281,6 +356,20 @@ public sealed class MappingPanel : UserControl
     }
 
     private static int Clamp(TrackBar bar, int value) => Math.Clamp(value, bar.Minimum, bar.Maximum);
+
+    /// <summary>
+    /// 送り方を外から変える。ショートカットで切り替えたときに、コンボの表示が置いていかれない
+    /// ようにするための経路。コンボに書けば SelectedIndexChanged 経由で Apply が走り、
+    /// MouseOutput への反映もそこで揃う。
+    /// </summary>
+    public void SetPointerMode(PointerMode mode)
+    {
+        _pointerModeCombo.SelectedIndex = mode == PointerMode.Relative ? 1 : 0;
+    }
+
+    /// <summary>人に見せる送り先の名前。状況表示とトレイで同じ言葉を使う。</summary>
+    public static string PointerModeLabel(PointerMode mode) =>
+        mode == PointerMode.Relative ? "ゲーム (視点)" : "デスクトップ";
 
     private string _outputHotkeyLabel = string.Empty;
     private bool _outputEnabled;
@@ -356,7 +445,8 @@ public sealed class MappingPanel : UserControl
 
         StatusText = reachText
                    + $"\n半径 {command.NormalizedRadius:F2}  {state}"
-                   + $"\n出力 {(outputEnabled ? "ON" : "OFF")}"
+                   + $"\n出力 {(outputEnabled ? "ON" : "OFF")}  送り先 {PointerModeLabel(_output.Mode)}"
+                   + PointerModeNote()
                    + pressure;
 
         _curveView.SetPosition(command.NormalizedRadius, command.Engaged, command.PressureFactor);
