@@ -18,6 +18,7 @@ public sealed class MappingPanel : UserControl
 
     private readonly Button _outputButton = new() { Text = "マウス出力 開始", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
     private readonly Button _calibrateButton = new() { Text = "可動域キャリブレーション (12秒)", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
+    private readonly Button _aimTestButton = new() { Text = "エイムテスト (約2分)", AutoSize = true, Height = 30, FlatStyle = FlatStyle.System, Margin = new Padding(0, 0, 8, 6) };
 
     private readonly TrackBar _deadzoneBar = new() { Minimum = 0, Maximum = 60, Value = 18, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
     private readonly TrackBar _exponentBar = new() { Minimum = 50, Maximum = 400, Value = 200, TickStyle = TickStyle.None, AutoSize = false, Width = 130, Height = 30 };
@@ -80,6 +81,9 @@ public sealed class MappingPanel : UserControl
     /// <summary>[荷重の範囲を測る] が押された。</summary>
     public event Action? LoadRangeRequested;
 
+    /// <summary>[エイムテスト] が押された。</summary>
+    public event Action? AimTestRequested;
+
     /// <summary>送り方が変わった。MainForm が状況表示とトレイを更新する。</summary>
     public event Action? PointerModeChanged;
 
@@ -109,7 +113,7 @@ public sealed class MappingPanel : UserControl
         _pointerModeCombo.SelectedIndex = 0;
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, 4, 14, 0) };
         buttons.Controls.AddRange([
-            _outputButton, _calibrateButton,
+            _outputButton, _calibrateButton, _aimTestButton,
             _pointerModeCombo, _relativeGainLabel, _relativeGainBar,
             _shareLeftRight, _invertY, _autoCenter]);
         left.Controls.Add(buttons);
@@ -137,6 +141,7 @@ public sealed class MappingPanel : UserControl
 
         _outputButton.Click += (_, _) => OutputToggleRequested?.Invoke();
         _calibrateButton.Click += (_, _) => CalibrationRequested?.Invoke();
+        _aimTestButton.Click += (_, _) => AimTestRequested?.Invoke();
         _pointerModeCombo.SelectedIndexChanged += (_, _) => { Apply(); PointerModeChanged?.Invoke(); };
         _relativeGainBar.ValueChanged += (_, _) => Apply();
         _deadzoneBar.ValueChanged += (_, _) => Apply();
@@ -396,6 +401,13 @@ public sealed class MappingPanel : UserControl
     public void SetCalibrating(bool calibrating)
     {
         _calibrateButton.Enabled = !calibrating;
+    }
+
+    /// <summary>テスト中は二重に開けないようにする。窓は別に出ているので、押せると紛らわしい。</summary>
+    public void SetAimTesting(bool testing)
+    {
+        _aimTestButton.Enabled = !testing;
+        _aimTestButton.Text = testing ? "エイムテスト 実行中" : "エイムテスト (約2分)";
     }
 
     public void SetLoadRangeCalibrating(bool calibrating)

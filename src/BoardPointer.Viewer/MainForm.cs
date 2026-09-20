@@ -5,6 +5,7 @@ using BoardPointer.Core.Pipeline;
 using BoardPointer.Core.Recording;
 using BoardPointer.Core.Sampling;
 using BoardPointer.Core.Settings;
+using BoardPointer.Core.Training;
 
 namespace BoardPointer.Viewer;
 
@@ -74,6 +75,10 @@ public sealed class MainForm : Form
     private SettingsPanel _settingsPanel = null!;
     private HotkeyManager? _hotkeys;
     private TrayController? _tray;
+
+    // サンプルスレッドから読むので volatile。窓が閉じた瞬間に null になるが、閉じた窓に
+    // Feed しても中で弾かれるので、読み取りが1サンプルぶん遅れても害はない。
+    private volatile AimTestForm? _aimTest;
 
     // 起動時の復元中は、つまみが動いても「操作された」とは扱わない。
     private bool _uiReady;
@@ -246,6 +251,7 @@ public sealed class MainForm : Form
         _mappingPanel.PointerModeChanged += OnPointerModeChanged;
         _mappingPanel.CalibrationRequested += BeginReachCalibration;
         _mappingPanel.LoadRangeRequested += BeginLoadRangeCalibration;
+        _mappingPanel.AimTestRequested += BeginAimTest;
 
         var signalTab = new TabPage("フィルタ") { BackColor = Color.FromArgb(27, 29, 34) };
         signalTab.Controls.Add(BuildFilterPanel());
@@ -466,6 +472,21 @@ public sealed class MainForm : Form
 
     private void StopSource(string? message)
     {
+        // サンプルが来なくなるとテストは進まなくなる。開いたままにすると「固まった」ように
+        // 見えるので、ソースを止めるときは一緒に閉じる。[接続] はワーカースレッドから
+        // ここへ来るので、窓に触るのは必ずその窓のスレッドに戻してから。
+        if (_aimTest is { } test)
+        {
+            if (test.InvokeRequired)
+            {
+                test.BeginInvoke(test.Close);
+            }
+            else
+            {
+                test.Close();
+            }
+        }
+
         StopRecording();
         if (_mouseEnabled)
         {
@@ -556,6 +577,10 @@ public sealed class MainForm : Form
 
         var command = _mapper.Update(frame);
         _latestCommand = command;
+
+        // エイムテストは本物のカーソルではなく自前の仮想カーソルを動かす。速度の出どころは
+        // マウス出力と同じ command なので、測っているのは実際に使うときと同じ経路。
+        _aimTest?.Feed(command, sample.TimestampMs);
 
         // 荷重の範囲の測定。閾値は「自分がどこまで荷重を動かせるか」で決まるので、感覚ではなく
         // 実測で置く。可動域の測定と同じ考え方。
@@ -710,6 +735,94 @@ public sealed class MainForm : Form
         _mappingPanel.SetCalibrating(true);
         _status.Text = $"可動域を測っています ({ReachCalibrationMs / 1000}秒)。"
                      + "足先で大きく円を描くように、前後左右いっぱいまで動かしてください。";
+    }
+
+    /// <summary>
+    /// エイムテストを開く。
+    ///
+    /// 同じプロセスでやるのが要点で、別アプリにできない理由が3つある。ボードの接続は排他なので
+    /// 繋ぎ直しが要ること。重心の原点と荷重ゼロ点は毎回測り直す設計なので、別プロセスだと
+    /// **測定時と本番で別のゼロ点**になること (原点が数mmずれるだけで整定時間はそのぶん悪化する
+    /// ので、設定を測っているのかゼロ点を測っているのか分からなくなる)。そして設定ファイルを
+    /// 介した往復になること。測りたいのは「今のこの状態で、つまみだけ変えたらどうなるか」で、
+    /// そこを跨いだ時点で測定にならない。
+    ///
+    /// マウス出力は必ず切る。テスト中に本物のカーソルまで動くと、中断したあとに窓へ戻れない。
+    /// </summary>
+    private void BeginAimTest()
+    {
+        if (_source is null)
+        {
+            _status.Text = "先にソースを繋いでください。";
+            return;
+        }
+        if (_aimTest is not null)
+        {
+            return;
+        }
+
+        if (_mouseEnabled)
+        {
+            ToggleMouseOutput();
+        }
+
+        bool finished = false;
+        var form = new AimTestForm(BuildAimConditions, _settings, Screen.FromControl(this));
+        form.Finished += path => BeginInvoke(() =>
+        {
+            finished = true;
+            // 前回のスコアは窓の中で _settings に書かれている。終了を待たずに保存しておく
+            // --- 2分かけた測定で、可動域の測定と同じ扱いにする理由がある。
+            SaveSettings();
+            _status.Text = path is null
+                ? "エイムテストが終わりました。"
+                : $"エイムテストが終わりました。結果は {path} です。";
+        });
+        form.FormClosed += (_, _) =>
+        {
+            _aimTest = null;
+            _mappingPanel.SetAimTesting(false);
+            if (!finished)
+            {
+                // 中断したときに「テスト中です」が残ると、まだ動いているように見える。
+                _status.Text = "エイムテストを中止しました。途中までの成績は結果にしていません。";
+            }
+        };
+
+        _aimTest = form;
+        _mappingPanel.SetAimTesting(true);
+        _status.Text = "エイムテスト中です。Esc で中止できます (中止したぶんは結果になりません)。";
+        form.Show(this);
+        form.Activate();
+    }
+
+    /// <summary>
+    /// 測ったときの設定を1つにまとめる。診断が「次にどのつまみをどちらへ」まで書けるのは、
+    /// 今の値を知っているからで、結果CSVに焼き込むのも同じものを使う。
+    /// </summary>
+    private AimTestConditions BuildAimConditions()
+    {
+        var frame = _latest;
+        return new AimTestConditions(
+            PostureMode: _modeCombo.SelectedIndex == 1 ? "SeatedFoot" : "Standing",
+            Deadzone: _mapper.Curve.Deadzone,
+            FullScale: _mapper.Curve.FullScale,
+            Exponent: _mapper.Curve.Exponent,
+            MaxSpeedPxPerSec: _mapper.Curve.MaxSpeedPxPerSec,
+            MinCutoffHz: _options.MinCutoffHz,
+            Beta: _options.Beta,
+            ReachIsCalibrated: _mapper.Reach.IsCalibrated,
+            ReachFrontMm: _mapper.Reach.FrontMm,
+            ReachBackMm: _mapper.Reach.BackMm,
+            ReachLeftMm: _mapper.Reach.LeftMm,
+            ReachRightMm: _mapper.Reach.RightMm,
+            PressureMode: _mapper.Pressure.ToString(),
+            PressureEngageRatio: _mapper.PressureEngageRatio,
+            PressureFullRatio: _mapper.PressureFullRatio,
+            LoadFactorAtEngage: _mapper.LoadFactorAtEngage,
+            LoadFactorAtFull: _mapper.LoadFactorAtFull,
+            CopResolutionMm: _hasFrame ? frame.CopResolutionMm : 0,
+            TotalKg: _hasFrame ? frame.TotalKg : 0);
     }
 
     private void BeginTare()
@@ -1026,6 +1139,14 @@ public sealed class MainForm : Form
 
     private void RunHotkey(HotkeyAction action)
     {
+        // テスト中は出力の入切も送り先の切替もクリックも意味が無いどころか、測定の途中で
+        // 条件が変わる。通すのは原点の合わせ直しだけ --- こちらは逆に、開始前の案内で
+        // 「流れるなら押してください」と出している経路そのもの。
+        if (_aimTest is not null && action != HotkeyAction.RecenterOrigin)
+        {
+            return;
+        }
+
         switch (action)
         {
             case HotkeyAction.ToggleOutput:

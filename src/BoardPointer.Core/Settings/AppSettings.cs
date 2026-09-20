@@ -79,6 +79,30 @@ public sealed class AppSettings
     /// <summary>安静時の基準荷重 [kg]。0 なら未測定で、荷重モードは無効になる。</summary>
     public double ReferenceLoadKg { get; set; }
 
+    // --- エイムテストの前回の成績 ---
+    //
+    // 1回ぶんしか持たない。比較したい相手はほぼ必ず「つまみを触る直前の自分」で、それ以上の
+    // 履歴が要るなら debug/aimtest_*.csv に全部残っている (測ったときの設定ごと)。
+    // ここに積み上げると、設定ファイルが記録ファイルの役をしはじめる。
+
+    /// <summary>前回測った日時 (表示用の文字列)。空なら未測定。</summary>
+    public string LastAimTestAt { get; set; } = string.Empty;
+
+    /// <summary>粗合わせ (初到達) の中央値 [ms]。</summary>
+    public double LastAimFirstTouchMs { get; set; }
+
+    /// <summary>詰め (整定) の中央値 [ms]。</summary>
+    public double LastAimSettleMs { get; set; }
+
+    /// <summary>維持完了までの中央値 [ms]。</summary>
+    public double LastAimCompletionMs { get; set; }
+
+    /// <summary>入り直しの平均 [回/試行]。</summary>
+    public double LastAimReEntries { get; set; }
+
+    /// <summary>粗合わせのスループット [bit/秒]。</summary>
+    public double LastAimThroughput { get; set; }
+
     // --- 常駐 ---
 
     /// <summary>窓を閉じても終了せずトレイに残る。既定で有効 --- 常駐して使うのが本来の形。</summary>
